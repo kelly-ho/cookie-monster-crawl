@@ -3,6 +3,7 @@
 Looking for (cookie) recipes! 
 
 Scope
+
 Start with a few curated recipe websites. Then expand to discovering recipes from a seed URL and following links. 
 
 Defining a recipe page: 
@@ -14,6 +15,7 @@ Relevant data
 * Instructions
 * Source
 * Website name 
+
 Nice to have data: prep time, cook time, servings, nutrition label, pictures. 
 
 Asynchronous behavior

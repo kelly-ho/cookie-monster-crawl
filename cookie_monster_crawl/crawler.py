@@ -1,66 +1,95 @@
-import time
-import requests
+import asyncio
+import aiohttp
 import json
-from typing import Optional
-from collections import deque
-from parser import get_links, is_recipe_page, get_recipe_data
+import logging
+from typing import Optional, List, Set, Dict
+from parser import get_links, get_recipe_data
 
-START_URLS = [
-    "https://www.americastestkitchen.com/", 
-    "https://www.seriouseats.com/"
-]
-
-MAX_PAGES = 20
-REQUEST_DELAY_SECS = 1.0
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 HEADERS = {
     "User-Agent": "CookieMonsterCrawler/0.1 (+https://github.com/kelly-ho/cookie-monster-crawler)"
 }
 
-def fetch(url: str) -> Optional[str]:
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        if response.status_code != 200:
-            return None
-        elif "text/html" not in response.headers.get("Content-Type", ""):
-            return None
-        return response.text
-    except requests.RequestException:
+class Crawler:
+    def __init__(self, start_urls: List[str], max_pages: int = 100, concurrency: int = 5, delay_secs: float = 1.0, timeout_secs = 15):
+        self.start_urls = start_urls
+        self.concurrency = concurrency
+        self.delay_secs = delay_secs
+        self.timeout_secs = timeout_secs
+        self.max_pages = max_pages
+
+        self.queue = asyncio.Queue()
+        self.visited: Set[str] = set()
+        self.recipes: List[Dict] = []
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def fetch(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
+        '''Fetch HTML content from a URL asynchronously.'''
+        try:
+            async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=self.timeout_secs)) as response:
+                if response.status == 200 and "text/html" in response.headers.get("Content-Type", ""):
+                    return await response.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.warning(f"Failed to fetch {url}: {e}")
         return None
+            
+    async def worker(self):
+        while True:
+            try:
+                url = await self.queue.get()
+                if url is None: 
+                    return
+                # To be polite
+                if self.delay_secs > 0: 
+                    await asyncio.sleep(self.delay_secs)
+                logger.info(f"Fetching: {url}")
+                html = await self.fetch(self.session, url)
+                if not html:
+                    self.queue.task_done()
+                    continue
+                recipe = get_recipe_data(html, url)
+                if recipe:
+                    logger.info(f"Found recipe: {recipe['title']}")
+                    self.recipes.append(recipe)
+                links = get_links(html, url)
+                for link in links:
+                    if link not in self.visited and len(self.visited) < self.max_pages:
+                        await self.queue.put(link)
+                        self.visited.add(link)
+            except Exception as e:
+                logger.error(f"Error processing {url}: {e}")
+            finally:
+                self.queue.task_done()
 
+    async def crawl(self):
+        for url in self.start_urls:
+            if len(self.visited) < self.max_pages:
+                self.queue.put_nowait(url)
+                self.visited.add(url)
+        async with aiohttp.ClientSession() as session:
+            self.session = session
+            workers = [asyncio.create_task(self.worker()) for _ in range(self.concurrency)]
+            await self.queue.join()
+            for _ in range(self.concurrency):
+                await self.queue.put(None)
+            await asyncio.gather(*workers, return_exceptions=True)
+        self.save_results()
 
-def crawl():
-    queue = deque(START_URLS)
-    visited = set()
-    recipes = []
-    while queue and len(visited) < MAX_PAGES:
-        url = queue.popleft()
-        if url in visited:
-            continue
-        print(f"Fetching: {url}")
-        visited.add(url)
-        html = fetch(url)
-        if html:
-            recipe = get_recipe_data(html, url)
-            if recipe:
-                print(f" Found recipe: {recipe['title']}")
-                recipes.append(recipe)
-            links = get_links(html, url)
-            for link in links:
-                if link not in visited:
-                    queue.append(link)
-            print(f" Found {len(links)} links")
-        else:
-            print(" Fetch failed")
-        time.sleep(REQUEST_DELAY_SECS)
-    
-    output_file = "recipes.json"
-    with open(output_file, "w") as f:
-        json.dump(recipes, f, indent=2)
-    
-    print(f"\nDone. Visited {len(visited)} pages, found {len(recipes)} recipes.")
-    print(f"Recipes saved to {output_file}")
+    def save_results(self):
+        output_file = "recipes.json"
+        with open(output_file, "w") as f:
+            json.dump(self.recipes, f, indent=2)
+
+        logger.info(f"\nDone. Visited {len(self.visited)} pages, found {len(self.recipes)} recipes.")
+        logger.info(f"Recipes saved to {output_file}")
 
 
 if __name__ == "__main__":
-    crawl()
+    START_URLS = [
+        "https://www.americastestkitchen.com/", 
+        "https://www.seriouseats.com/"
+    ]
+    cookie_monster = Crawler(start_urls=START_URLS)
+    asyncio.run(cookie_monster.crawl())

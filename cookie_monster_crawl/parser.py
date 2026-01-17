@@ -18,18 +18,13 @@ def get_links(html: str, base_url: str) -> Set[str]:
     soup = BeautifulSoup(html, "html.parser")
     links = set()
     base_domain = get_base_domain(base_url)
-    for link in soup.find_all("a", href=True):
-        href = link.get("href")
-        if not href:
+    # Find all anchor tags
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith(("#", "mailto:", "javascript:")):
             continue
-        # Skip fragments (specific sections in page)
-        if href.startswith("#"):
-            continue
-        final_url = urljoin(base_url, href)
-        # Limited to same domain to prevent scope exploding
-        link_domain = get_base_domain(final_url)
-        if link_domain == base_domain:
-            final_url = final_url.split("#")[0]
+        final_url = urljoin(base_url, href).split("#")[0].rstrip("/")
+        if get_base_domain(final_url) == base_domain:
             links.add(final_url)
     return links
 
@@ -53,7 +48,9 @@ def is_recipe_page(html: str) -> bool:
 def _contains_recipe_schema(data: any) -> bool:
     """Recursively check if data contains Recipe schema."""
     if isinstance(data, dict):
-        if data.get("@type") == "Recipe":
+        node_type = data.get("@type")
+        types = node_type if isinstance(node_type, list) else [node_type]
+        if "Recipe" in types:
             return True
         for value in data.values():
             if _contains_recipe_schema(value):
@@ -89,7 +86,9 @@ def get_recipe_data(html: str, url: str) -> Optional[dict]:
 def _extract_recipe_from_data(data: any) -> Optional[dict]:
     """Recursively find and extract Recipe schema from json-ld data."""
     if isinstance(data, dict):
-        if data.get("@type") == "Recipe":
+        node_type = data.get("@type")
+        types = node_type if isinstance(node_type, list) else [node_type]
+        if "Recipe" in types:
             return _parse_recipe(data)
         for value in data.values():
             result = _extract_recipe_from_data(value)
