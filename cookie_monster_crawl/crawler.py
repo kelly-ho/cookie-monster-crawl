@@ -3,7 +3,8 @@ import aiohttp
 import json
 import logging
 from typing import Optional, List, Set, Dict
-from parser import get_links, get_recipe_data
+from .parser import get_links, get_recipe_data, get_base_domain
+from .utils import RobotsChecker
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ class Crawler:
         self.delay_secs = delay_secs
         self.timeout_secs = timeout_secs
         self.max_pages = max_pages
+        self.robots_checker = RobotsChecker(user_agent=HEADERS["User-Agent"])
 
         self.queue = asyncio.Queue()
         self.visited: Set[str] = set()
@@ -27,6 +29,15 @@ class Crawler:
 
     async def fetch(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
         '''Fetch HTML content from a URL asynchronously.'''
+        if not self.robots_checker.is_allowed(url):
+            logger.info(f"Blocked by robots.txt: {url}")
+            return None
+        domain = get_base_domain(url)
+        crawl_delay = self.robots_checker.get_crawl_delay(domain)
+        sleep_time = max(self.delay_secs, crawl_delay)
+        if sleep_time > 0:
+            await asyncio.sleep(sleep_time)
+        
         try:
             async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=self.timeout_secs)) as response:
                 if response.status == 200 and "text/html" in response.headers.get("Content-Type", ""):
@@ -41,9 +52,6 @@ class Crawler:
                 url = await self.queue.get()
                 if url is None: 
                     return
-                # To be polite
-                if self.delay_secs > 0: 
-                    await asyncio.sleep(self.delay_secs)
                 logger.info(f"Fetching: {url}")
                 html = await self.fetch(self.session, url)
                 if not html:
@@ -55,7 +63,7 @@ class Crawler:
                     self.recipes.append(recipe)
                 links = get_links(html, url)
                 for link in links:
-                    if link not in self.visited and len(self.visited) < self.max_pages:
+                    if link not in self.visited and len(self.visited) < self.max_pages and self.robots_checker.is_allowed(link):
                         await self.queue.put(link)
                         self.visited.add(link)
             except Exception as e:
