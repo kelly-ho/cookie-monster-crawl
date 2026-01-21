@@ -1,7 +1,27 @@
 import logging
 from urllib.robotparser import RobotFileParser
 from typing import Dict, Optional
-from .parser import get_base_domain
+from cookie_monster_crawl.parser import get_base_domain
+
+
+RECIPE_KEYWORDS = {
+    "recipe", "ingredients", "instructions",
+    "cook", "bake", "prep", "serves"
+}
+
+NON_RECIPE_KEYWORDS = {
+    "guide", "review", "blog", "article"
+}
+
+def score_page(html: str) -> float:
+    text = html.lower()
+
+    recipe_hits = sum(1 for kw in RECIPE_KEYWORDS if kw in text)
+    non_recipe_hits = sum(1 for kw in NON_RECIPE_KEYWORDS if kw in text)
+
+    score = recipe_hits - 0.5 * non_recipe_hits  
+    return min(1.0, score / 5)
+
 
 
 class RobotsChecker:
@@ -48,3 +68,4 @@ class RobotsChecker:
             return 0.0
         delay = parser.crawl_delay(self.user_agent)
         return delay if delay is not None else 0.0
+    
