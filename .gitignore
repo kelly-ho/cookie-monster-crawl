@@ -208,3 +208,5 @@ __marimo__/
 
 # Local recipe output
 recipes.json
+notes.md
+logs/

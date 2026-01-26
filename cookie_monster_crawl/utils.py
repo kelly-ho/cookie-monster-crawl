@@ -1,7 +1,9 @@
 import logging
+import random
 from urllib.robotparser import RobotFileParser
 from typing import Dict, Optional
 from cookie_monster_crawl.parser import get_base_domain
+import httpx
 
 
 RECIPE_KEYWORDS = {
@@ -23,49 +25,53 @@ def score_page(html: str) -> float:
     return min(1.0, score / 5)
 
 
-
 class RobotsChecker:
-    '''Manages robots.txt rules per domain'''
-    
     def __init__(self, user_agent: str):
-        '''Initialize RobotsChecker with a user agent.'''
         self.user_agent = user_agent
         self.parsers: Dict[str, Optional[RobotFileParser]] = {}
+        # Use browser header for the fetching robots.txt
+        self.fetch_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Accept": "text/plain"
+        }
         self.logger = logging.getLogger(__name__)
-    
-    def _load_robots_txt(self, domain: str) -> Optional[RobotFileParser]:
-        '''Fetch and parse robots.txt for a domain'''
+
+    async def _load_robots_txt(self, domain: str) -> Optional[RobotFileParser]:
+        """Asynchronously fetch robots.txt with headers."""
         robots_url = f"https://{domain}/robots.txt"
-        try:
-            parser = RobotFileParser(robots_url)
-            parser.read()
-            self.logger.debug(f"Loaded robots.txt from {domain}")
-            return parser
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch robots.txt from {domain}: {e}")
-            return None
-    
-    def is_allowed(self, url: str) -> bool:
-        '''Check if URL is allowed by the domain's robots.txt'''
-        domain = get_base_domain(url)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.get(robots_url, headers=self.fetch_headers)
+                if response.status_code == 404:
+                    return None
+                # If we get blocked (403), we might want to log it and be conservative
+                if response.status_code != 200:
+                    self.logger.warning(f"Blocked or error {response.status_code} for {domain}")
+                    return None
+                parser = RobotFileParser()
+                parser.parse(response.text.splitlines())
+                return parser
+            except Exception as e:
+                self.logger.error(f"Unable to load robots.txt for {domain}: {e}")
+                return None
+
+    async def is_allowed(self, url: str) -> bool:
+        """Check permission without blocking the event loop."""
+        parsed_url = httpx.URL(url)
+        domain = parsed_url.host
         if domain not in self.parsers:
-            parser = self._load_robots_txt(domain)
-            self.parsers[domain] = parser
+            self.parsers[domain] = await self._load_robots_txt(domain)
         parser = self.parsers[domain]
         if parser is None:
-            return True
-        allowed = parser.can_fetch(self.user_agent, url)
-        if not allowed:
-            self.logger.info(f"Blocked by robots.txt: {url}")
-        return allowed
+            return True # Default to allowed if no rules found    
+        return parser.can_fetch(self.user_agent, url)
     
-    def get_crawl_delay(self, domain: str) -> float:
+    async def get_crawl_delay(self, domain: str) -> float:
         '''Get the crawl delay (in seconds) for a domain from robots.txt'''
         if domain not in self.parsers:
-            self.parsers[domain] = self._load_robots_txt(domain)
+            self.parsers[domain] = await self._load_robots_txt(domain)
         parser = self.parsers[domain]
         if parser is None:
             return 0.0
         delay = parser.crawl_delay(self.user_agent)
         return delay if delay is not None else 0.0
-    
