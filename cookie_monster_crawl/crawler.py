@@ -3,11 +3,10 @@ import aiohttp
 import json
 import logging
 import os
-import sys
 from datetime import datetime
 from typing import Optional, List, Set, Dict
 from cookie_monster_crawl.parser import get_links, get_recipe_data, get_base_domain
-from cookie_monster_crawl.utils import RobotsChecker, score_page
+from cookie_monster_crawl.utils import RobotsChecker, URLPrioritizer
 from cookie_monster_crawl.priority_queue import AsyncPriorityQueue
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,6 +24,7 @@ class Crawler:
         self.timeout_secs = timeout_secs
         self.max_pages = max_pages
         self.robots_checker = RobotsChecker(user_agent=HEADERS["User-Agent"])
+        self.url_prioritizer = URLPrioritizer()
 
         self.queue = AsyncPriorityQueue()
         self.visited: Set[str] = set()
@@ -58,15 +58,13 @@ class Crawler:
         while True:
             try:
                 item = await self.queue.get()
-                _, url_object = item
-                if url_object is None:
+                _, url = item
+                if url is None:
                     return
-                url, parent_relevance = url_object
                 logger.info(f"Fetching: {url}")
                 html = await self.fetch(self.session, url)
                 if not html:
                     continue
-                relevance = score_page(html)
                 recipe = get_recipe_data(html, url)
                 if recipe:
                     logger.info(f"Found recipe: {recipe['title']}")
@@ -75,8 +73,9 @@ class Crawler:
                 for link in links:
                     if link not in self.visited and len(self.visited) < self.max_pages:
                         if await self.robots_checker.is_allowed(link):
-                            link_priority = (0.7 * relevance + 0.3 * parent_relevance)
-                            await self.queue.put((-link_priority, (link, relevance)))
+                            priority_score = self.url_prioritizer.calculate_score(link)
+                            logger.info(f"Enqueuing: {link} with priority {priority_score}")
+                            await self.queue.put((priority_score, link))
                             self.visited.add(link)
                         else:
                             domain = get_base_domain(link)
@@ -89,14 +88,13 @@ class Crawler:
     async def crawl(self):
         for url in self.start_urls:
             if len(self.visited) < self.max_pages:
-                self.queue.put_nowait((-1.0, (url, 1.0)))
-                self.visited.add(url)
+                self.queue.put_nowait((-float('inf'), url))
         async with aiohttp.ClientSession() as session:
             self.session = session
             workers = [asyncio.create_task(self.worker()) for _ in range(self.concurrency)]
             await self.queue.join()
             for _ in range(self.concurrency):
-                await self.queue.put((float("inf"), None))
+                await self.queue.put((0, None))
             await asyncio.gather(*workers, return_exceptions=True)
         self.save_results()
 
@@ -107,6 +105,18 @@ class Crawler:
 
         logger.info(f"Recipes saved to {output_file}")
         logger.info(f"\nDone. Visited {len(self.visited)} pages, found {len(self.recipes)} recipes.")
+        
+        # List non-recipe URLs
+        recipe_urls = {recipe['url'] for recipe in self.recipes}
+        non_recipe_urls = sorted(self.visited - recipe_urls)
+        
+        if non_recipe_urls:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Non-recipe URLs visited ({len(non_recipe_urls)} total):")
+            logger.info(f"{'='*60}")
+            for url in non_recipe_urls:
+                logger.info(f"  - {url}")
+            logger.info(f"{'='*60}")
         
         if self.blocked_domains:
             logger.info(f"\n{'='*60}")

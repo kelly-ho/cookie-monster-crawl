@@ -1,28 +1,34 @@
 import logging
-import random
 from urllib.robotparser import RobotFileParser
 from typing import Dict, Optional
-from cookie_monster_crawl.parser import get_base_domain
 import httpx
+import re
+from urllib.parse import urlparse
+import numpy as np
 
+class URLPrioritizer:
+    def __init__(self):
+        self.recipe_patterns = re.compile(r'/(recipe(?!s)|cook|make|instructions|bake)/|-[0-9]+$')
+        self.non_recipe_patterns = re.compile(r'/(guide|review|blog|article|tag|category|author|search|member|login|cart|shop|holiday|index|how-to|recipes|budget|ideas)/')
 
-RECIPE_KEYWORDS = {
-    "recipe", "ingredients", "instructions",
-    "cook", "bake", "prep", "serves"
-}
+    def calculate_score(self, url: str, anchor_text: str = "") -> float:
+        score = 0.5 
+        path = urlparse(url).path.lower()
 
-NON_RECIPE_KEYWORDS = {
-    "guide", "review", "blog", "article"
-}
+        recipe_matches = self.recipe_patterns.findall(url)
+        non_recipe_matches = self.non_recipe_patterns.findall(url)
 
-def score_page(html: str) -> float:
-    text = html.lower()
+        # lower score means higher priority
+        score -= (len(recipe_matches) * 0.8)
+        score += (len(non_recipe_matches) * 1.2)
 
-    recipe_hits = sum(1 for kw in RECIPE_KEYWORDS if kw in text)
-    non_recipe_hits = sum(1 for kw in NON_RECIPE_KEYWORDS if kw in text)
+        if "-" in path:
+            dash_count = path.count("-")
+            score -= (dash_count * 0.1) # More dashes usually means a more specific recipe title
 
-    score = recipe_hits - 0.5 * non_recipe_hits  
-    return min(1.0, score / 5)
+        # TODO: Adjust score based on anchor text
+        # TODO: Compare z score to sigmoid
+        return 1 / (1 + np.exp(-score))
 
 
 class RobotsChecker:
