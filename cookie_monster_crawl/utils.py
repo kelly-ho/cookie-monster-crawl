@@ -5,26 +5,58 @@ import httpx
 import re
 from urllib.parse import urlparse
 import numpy as np
+from datasketch import MinHash, MinHashLSH
+from cookie_monster_crawl.parser import get_base_domain
 
 class URLPrioritizer:
-    def __init__(self):
-        self.recipe_patterns = re.compile(r'/(recipe(?!s)|cook|make|instructions|bake)/|-[0-9]+$')
+    def __init__(self, lsh_threshold=0.4, num_perm=128):
+        self.recipe_patterns = re.compile(r'/(?:recipe(?!s)|cook|make|instructions|bake)/')
         self.non_recipe_patterns = re.compile(r'/(guide|review|blog|article|tag|category|author|search|member|login|cart|shop|holiday|index|how-to|recipes|budget|ideas)/')
+        
+        self.num_perm = num_perm
+        self.lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
+        self.junk_counter = 0
+        self.rescore_sensitivity = 0.3
 
-    def calculate_score(self, url: str, anchor_text: str = "") -> float:
+    def _get_minhash(self, url: str):
+        """Creates a fingerprint based on URL path segments and character shingles."""
+        m = MinHash(num_perm=self.num_perm)
+        path = urlparse(url).path.lower()
+        path = re.sub(r'\d+', 'ID', path)
+        tokens = re.split(r'[/-]', path)
+        for token in tokens:
+            if not token: continue
+            m.update(token.encode('utf8'))
+        return m
+    
+    def learn_non_recipe(self, url: str):
+        """Penalize page that is crawled but contains no recipe schema."""
+        m = self._get_minhash(url)
+        self.junk_counter += 1
+        self.lsh.insert(f"junk_{self.junk_counter}", m)
+    
+    def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> float:
         score = 0.5 
         path = urlparse(url).path.lower()
 
-        recipe_matches = self.recipe_patterns.findall(url)
-        non_recipe_matches = self.non_recipe_patterns.findall(url)
+        recipe_matches = self.recipe_patterns.findall(path)
+        non_recipe_matches = self.non_recipe_patterns.findall(path)
 
         # lower score means higher priority
         score -= (len(recipe_matches) * 0.8)
         score += (len(non_recipe_matches) * 1.2)
+        
+        # Penalize frequent domains for diversity
+        if domain_counts:
+            domain = get_base_domain(url)
+            fetch_count = domain_counts.get(domain, 0)
+            score += (fetch_count * 0.05)
 
-        if "-" in path:
-            dash_count = path.count("-")
-            score -= (dash_count * 0.1) # More dashes usually means a more specific recipe title
+
+        m = self._get_minhash(url)
+        similar_junk = self.lsh.query(m)
+        if similar_junk:
+            score += (len(similar_junk) * 1.5)
 
         # TODO: Adjust score based on anchor text
         # TODO: Compare z score to sigmoid
@@ -50,7 +82,7 @@ class RobotsChecker:
                 response = await client.get(robots_url, headers=self.fetch_headers)
                 if response.status_code == 404:
                     return None
-                # If we get blocked (403), we might want to log it and be conservative
+                # If we get blocked (403), log it and be conservative
                 if response.status_code != 200:
                     self.logger.warning(f"Blocked or error {response.status_code} for {domain}")
                     return None
@@ -69,7 +101,7 @@ class RobotsChecker:
             self.parsers[domain] = await self._load_robots_txt(domain)
         parser = self.parsers[domain]
         if parser is None:
-            return True # Default to allowed if no rules found    
+            return True
         return parser.can_fetch(self.user_agent, url)
     
     async def get_crawl_delay(self, domain: str) -> float:

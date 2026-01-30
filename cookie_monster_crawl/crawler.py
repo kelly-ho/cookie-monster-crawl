@@ -35,45 +35,52 @@ class Crawler:
         self.session: Optional[aiohttp.ClientSession] = None
         self.blocked_domains: Set[str] = set()
         self.stop_signal = asyncio.Event()
+        self.domain_locks: Dict[str, asyncio.Lock] = {}
         
-        # Metrics tracking
+        self.pages_fetched = 0
+        self.seed_file_name = None
         self.latencies: List[float] = []
         self.domain_stats: Dict[str, int] = defaultdict(int)
         self.crawl_start_time: Optional[float] = None
         self.crawl_end_time: Optional[float] = None
 
     async def fetch(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
-        '''Fetch HTML content from a URL asynchronously.'''
-        if not await self.robots_checker.is_allowed(url):
-            logger.info(f"Blocked by robots.txt: {url}")
-            domain = get_base_domain(url)
-            self.blocked_domains.add(domain)
-            return None
+        '''Fetch HTML content from a URL asynchronously with domain-level locking.'''
         domain = get_base_domain(url)
-        crawl_delay = await self.robots_checker.get_crawl_delay(domain)
-        sleep_time = max(self.delay_secs, crawl_delay)
-        if sleep_time > 0:
-            await asyncio.sleep(sleep_time)
         
-        start_time = time.time()
-        try:
-            async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=self.timeout_secs)) as response:
-                if response.status == 200 and "text/html" in response.headers.get("Content-Type", ""):
-                    html = await response.text()
-                    latency = time.time() - start_time
-                    self.latencies.append(latency)
-                    self.domain_stats[domain] += 1
-                    return html
-                logger.warning(f"Unexpected status {response.status} for {url}")
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            logger.warning(f"Failed to fetch {url}: {e}")
-        return None
+        if domain not in self.domain_locks:
+            self.domain_locks[domain] = asyncio.Lock()
+        
+        async with self.domain_locks[domain]:
+            if not await self.robots_checker.is_allowed(url):
+                logger.info(f"Blocked by robots.txt: {url}")
+                self.blocked_domains.add(domain)
+                return None
+            
+            crawl_delay = await self.robots_checker.get_crawl_delay(domain)
+            sleep_time = max(self.delay_secs, crawl_delay)
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
+            
+            start_time = time.time()
+            try:
+                async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=self.timeout_secs)) as response:
+                    if response.status == 200 and "text/html" in response.headers.get("Content-Type", ""):
+                        html = await response.text()
+                        latency = time.time() - start_time
+                        self.latencies.append(latency)
+                        self.domain_stats[domain] += 1
+                        return html
+                    logger.warning(f"Unexpected status {response.status} for {url}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.warning(f"Failed to fetch {url}: {e}")
+            return None
             
     async def worker(self):
         while True:
             try:
                 item = await self.queue.get()
-                _, url = item
+                priority, url = item
                 if url is None:
                     return
                 
@@ -85,8 +92,28 @@ class Crawler:
                     self.queue.task_done()
                     continue
                 
+                domain = get_base_domain(url)
+                if domain not in self.domain_locks:
+                    self.domain_locks[domain] = asyncio.Lock()
+                
+                if self.domain_locks[domain].locked():
+                    await self.queue.put((priority + 0.1, url))
+                    self.queue.task_done()
+                    continue
+                
+                if url not in self.start_urls:
+                    new_priority = self.url_prioritizer.calculate_score(url, self.domain_stats)                    
+                    if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
+                        logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
+                        await self.queue.put((new_priority, url))
+                        self.queue.task_done()
+                        continue
+                
                 logger.info(f"Fetching: {url}")
                 self.visited.add(url)
+                
+                if url not in self.start_urls:
+                    self.pages_fetched += 1
                 
                 html = await self.fetch(self.session, url)
                 if not html:
@@ -95,8 +122,11 @@ class Crawler:
                 if recipe:
                     logger.info(f"Found recipe: {recipe['title']}")
                     self.recipes.append(recipe)
+                else:
+                    self.url_prioritizer.learn_non_recipe(url)
 
-                if len(self.visited) >= self.max_pages:
+                # Check if we've hit page limit (excluding seed URLs)
+                if self.pages_fetched >= self.max_pages:
                     logger.info(f"Reached max_pages limit of {self.max_pages}")
                     self.stop_signal.set()
                     self.queue.task_done()
@@ -107,6 +137,7 @@ class Crawler:
                     if link not in self.queued:
                         if await self.robots_checker.is_allowed(link):
                             priority_score = self.url_prioritizer.calculate_score(link)
+                            logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
                             await self.queue.put((priority_score, link))
                             self.queued.add(link)
                         else:
@@ -139,9 +170,9 @@ class Crawler:
         logger.info(f"Recipes saved to {output_file}")
         logger.info(f"\nDone. Visited {len(self.visited)} pages, found {len(self.recipes)} recipes.")
         
-        # List non-recipe URLs
         recipe_urls = {recipe['url'] for recipe in self.recipes}
-        non_recipe_urls = sorted(self.visited - recipe_urls)
+        seed_urls = set(self.start_urls)
+        non_recipe_urls = sorted(self.visited - recipe_urls - seed_urls)
         
         if non_recipe_urls:
             logger.info(f"\n{'='*60}")
@@ -166,7 +197,12 @@ class Crawler:
         os.makedirs("results", exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         
-        total_fetched = len([url for url in self.visited if any(url in recipe['url'] for recipe in self.recipes) or url in self.visited])
+        if self.seed_file_name:
+            report_file = f"results/run_{self.seed_file_name}_{timestamp}.json"
+        else:
+            report_file = f"results/run_{timestamp}.json"
+        
+        total_fetched = self.pages_fetched
         recipe_count = len(self.recipes)
         harvest_efficiency = (recipe_count / total_fetched * 100) if total_fetched > 0 else 0
         avg_latency = sum(self.latencies) / len(self.latencies) if self.latencies else 0
@@ -190,7 +226,6 @@ class Crawler:
             }
         }
         
-        report_file = f"results/run_{timestamp}.json"
         with open(report_file, "w") as f:
             json.dump(report, f, indent=4)
         
@@ -210,7 +245,10 @@ class Crawler:
         """Load seed URLs from JSON file. Path is relative to project root."""
         if filepath is None:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            filepath = os.path.join(project_root, "data", "seed.json")
+            filepath = os.path.join(project_root, "data", "static-target.json")
+        
+        # Extract seed file name (without extension) for report naming
+        self.seed_file_name = os.path.splitext(os.path.basename(filepath))[0]
         
         try:
             with open(filepath, "r") as f:

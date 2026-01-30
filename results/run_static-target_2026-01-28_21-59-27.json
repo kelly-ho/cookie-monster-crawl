@@ -40,5 +40,6 @@
         "concurrency": 5,
         "delay_secs": 1.0,
         "timeout_secs": 15
-    }
+    },
+    "notes": "added early stop signal; run is not representative of crawling due to unintended focus on a specific domain"
 }

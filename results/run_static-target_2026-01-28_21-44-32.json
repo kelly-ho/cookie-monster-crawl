@@ -40,5 +40,6 @@
         "concurrency": 5,
         "delay_secs": 1.0,
         "timeout_secs": 15
-    }
+    },
+    "notes": "trial: added dash count to prioritze URLs likely containing recipe titles"
 }

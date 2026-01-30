@@ -1,0 +1,42 @@
+{
+    "timestamp": "2026-01-29_20-56-53",
+    "total_fetched": 100,
+    "recipes_found": 69,
+    "harvest_efficiency_percent": 69.0,
+    "domain_breakdown": {
+        "minimalistbaker.com": 1,
+        "sallysbakingaddiction.com": 1,
+        "www.bonappetit.com": 16,
+        "www.allrecipes.com": 21,
+        "onceuponachef.com": 1,
+        "smittenkitchen.com": 1,
+        "www.food.com": 20,
+        "www.skinnytaste.com": 5,
+        "www.seriouseats.com": 22,
+        "www.americastestkitchen.com": 1,
+        "pinchofyum.com": 1,
+        "cooking.nytimes.com": 1,
+        "www.simplyrecipes.com": 22,
+        "loveandlemons.com": 1,
+        "www.tasteofhome.com": 1,
+        "natashaskitchen.com": 1,
+        "www.epicurious.com": 1,
+        "www.budgetbytes.com": 1,
+        "www.bbcgoodfood.com": 1,
+        "www.recipetineats.com": 1,
+        "www.gimmesomeoven.com": 1,
+        "cookieandkate.com": 1,
+        "www.kingarthurbaking.com": 1
+    },
+    "avg_latency_seconds": 0.244,
+    "total_duration_seconds": 34.03,
+    "pages_per_second": 2.94,
+    "blocked_domains": [],
+    "config": {
+        "max_pages": 100,
+        "concurrency": 5,
+        "delay_secs": 1.0,
+        "timeout_secs": 15
+    },
+    "notes": "updated page counting to exclude seed URLs and prevent multiple workers from fetching from the same domain simultaneously"
+}
