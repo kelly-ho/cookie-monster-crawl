@@ -111,19 +111,21 @@ class Crawler:
                 
                 logger.info(f"Fetching: {url}")
                 self.visited.add(url)
-                
+
                 if url not in self.start_urls:
                     self.pages_fetched += 1
-                
+
                 html = await self.fetch(self.session, url)
                 if not html:
                     continue
+
                 recipe = get_recipe_data(html, url)
                 if recipe:
                     logger.info(f"Found recipe: {recipe['title']}")
                     self.recipes.append(recipe)
+                    self.url_prioritizer.update_model(url, is_recipe=True)
                 else:
-                    self.url_prioritizer.learn_non_recipe(url)
+                    self.url_prioritizer.update_model(url, is_recipe=False)
 
                 # Check if we've hit page limit (excluding seed URLs)
                 if self.pages_fetched >= self.max_pages:
@@ -133,10 +135,10 @@ class Crawler:
                     break
                 
                 links = get_links(html, url)
-                for link in links:
+                for link, anchor_text in links.items():
                     if link not in self.queued:
                         if await self.robots_checker.is_allowed(link):
-                            priority_score = self.url_prioritizer.calculate_score(link)
+                            priority_score = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
                             logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
                             await self.queue.put((priority_score, link))
                             self.queued.add(link)

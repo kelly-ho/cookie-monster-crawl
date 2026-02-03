@@ -1,0 +1,43 @@
+{
+    "timestamp": "2026-02-02_22-23-36",
+    "total_fetched": 100,
+    "recipes_found": 59,
+    "harvest_efficiency_percent": 59.0,
+    "domain_breakdown": {
+        "www.recipetineats.com": 6,
+        "minimalistbaker.com": 7,
+        "sallysbakingaddiction.com": 1,
+        "www.thekitchn.com": 1,
+        "cooking.nytimes.com": 11,
+        "www.food.com": 3,
+        "natashaskitchen.com": 8,
+        "www.kingarthurbaking.com": 5,
+        "www.tasteofhome.com": 7,
+        "www.allrecipes.com": 8,
+        "pinchofyum.com": 4,
+        "www.seriouseats.com": 6,
+        "onceuponachef.com": 1,
+        "loveandlemons.com": 1,
+        "cookieandkate.com": 2,
+        "www.budgetbytes.com": 10,
+        "www.simplyrecipes.com": 4,
+        "www.bonappetit.com": 5,
+        "www.bbcgoodfood.com": 3,
+        "www.americastestkitchen.com": 11,
+        "smittenkitchen.com": 3,
+        "www.gimmesomeoven.com": 3,
+        "www.epicurious.com": 7,
+        "www.skinnytaste.com": 7
+    },
+    "avg_latency_seconds": 0.272,
+    "total_duration_seconds": 36.25,
+    "pages_per_second": 2.76,
+    "blocked_domains": [],
+    "config": {
+        "max_pages": 100,
+        "concurrency": 5,
+        "delay_secs": 1.0,
+        "timeout_secs": 15
+    }, 
+    "notes": "removed recipe/non recipe pattern matching to specific words"
+}

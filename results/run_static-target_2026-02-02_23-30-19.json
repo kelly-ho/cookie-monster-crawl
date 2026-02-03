@@ -1,0 +1,43 @@
+{
+    "timestamp": "2026-02-02_23-30-19",
+    "total_fetched": 100,
+    "recipes_found": 44,
+    "harvest_efficiency_percent": 44.0,
+    "domain_breakdown": {
+        "cookieandkate.com": 7,
+        "www.bbcgoodfood.com": 3,
+        "www.food.com": 8,
+        "www.allrecipes.com": 9,
+        "www.seriouseats.com": 9,
+        "minimalistbaker.com": 2,
+        "www.skinnytaste.com": 8,
+        "www.tasteofhome.com": 8,
+        "www.americastestkitchen.com": 5,
+        "smittenkitchen.com": 3,
+        "sallysbakingaddiction.com": 11,
+        "pinchofyum.com": 1,
+        "cooking.nytimes.com": 12,
+        "www.epicurious.com": 1,
+        "www.budgetbytes.com": 5,
+        "www.simplyrecipes.com": 11,
+        "www.bonappetit.com": 4,
+        "loveandlemons.com": 1,
+        "onceuponachef.com": 1,
+        "www.gimmesomeoven.com": 3,
+        "www.recipetineats.com": 4,
+        "www.kingarthurbaking.com": 6
+    },
+    "avg_latency_seconds": 0.239,
+    "total_duration_seconds": 34.24,
+    "pages_per_second": 2.92,
+    "blocked_domains": [
+        "www.bonappetit.com"
+    ],
+    "config": {
+        "max_pages": 100,
+        "concurrency": 5,
+        "delay_secs": 1.0,
+        "timeout_secs": 15
+    },
+    "notes": "baseline of no URL prioritization"
+}

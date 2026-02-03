@@ -1,5 +1,5 @@
 import json
-from typing import Set, Optional
+from typing import Set, Optional, Dict
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 
@@ -10,22 +10,23 @@ def get_base_domain(url: str) -> str:
     return parsed.netloc
 
 
-def get_links(html: str, base_url: str) -> Set[str]:
+def get_links(html: str, base_url: str) -> Dict[str, str]:
     """
     Extract all links from HTML and normalize them to absolute URLs.
     Only includes links from the same domain.
+    Returns dict mapping URL -> anchor text.
     """
     soup = BeautifulSoup(html, "html.parser")
-    links = set()
+    links = {}
     base_domain = get_base_domain(base_url)
-    # Find all anchor tags
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         if not href or href.startswith(("#", "mailto:", "javascript:")):
             continue
         final_url = urljoin(base_url, href).split("#")[0].rstrip("/")
         if get_base_domain(final_url) == base_domain:
-            links.add(final_url)
+            anchor_text = a.get_text(strip=True)
+            links[final_url] = anchor_text
     return links
 
 
