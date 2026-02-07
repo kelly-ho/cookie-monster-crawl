@@ -1,8 +1,8 @@
 import logging
 from urllib.robotparser import RobotFileParser
 from typing import Dict, Optional
-import httpx
 import re
+import aiohttp
 from urllib.parse import urlparse
 import numpy as np
 from datasketch import MinHash, MinHashLSH
@@ -111,36 +111,34 @@ class RobotsChecker:
     def __init__(self, user_agent: str):
         self.user_agent = user_agent
         self.parsers: Dict[str, Optional[RobotFileParser]] = {}
-        # Use browser header for the fetching robots.txt
         self.fetch_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "User-Agent": user_agent,
             "Accept": "text/plain"
         }
         self.logger = logging.getLogger(__name__)
-
+            
     async def _load_robots_txt(self, domain: str) -> Optional[RobotFileParser]:
         """Asynchronously fetch robots.txt with headers."""
         robots_url = f"https://{domain}/robots.txt"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                response = await client.get(robots_url, headers=self.fetch_headers)
-                if response.status_code == 404:
-                    return None
-                # If we get blocked (403), log it and be conservative
-                if response.status_code != 200:
-                    self.logger.warning(f"Blocked or error {response.status_code} for {domain}")
-                    return None
-                parser = RobotFileParser()
-                parser.parse(response.text.splitlines())
-                return parser
-            except Exception as e:
-                self.logger.error(f"Unable to load robots.txt for {domain}: {e}")
-                return None
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(robots_url, headers=self.fetch_headers, timeout=aiohttp.ClientTimeout(total=10.0)) as response:
+                    if response.status == 404:
+                        return None
+                    if response.status != 200:
+                        self.logger.warning(f"Blocked or error {response.status} for {domain}")
+                        return None
+                    text = await response.text()
+                    parser = RobotFileParser()
+                    parser.parse(text.splitlines())
+                    return parser
+        except Exception as e:
+            self.logger.error(f"Unable to load robots.txt for {domain}: {e}")
+            return None
 
     async def is_allowed(self, url: str) -> bool:
         """Check permission without blocking the event loop."""
-        parsed_url = httpx.URL(url)
-        domain = parsed_url.host
+        domain = urlparse(url).hostname
         if domain not in self.parsers:
             self.parsers[domain] = await self._load_robots_txt(domain)
         parser = self.parsers[domain]

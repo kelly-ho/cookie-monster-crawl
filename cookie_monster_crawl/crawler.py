@@ -19,8 +19,8 @@ HEADERS = {
 }
 
 class Crawler:
-    def __init__(self, start_urls: List[str]=[], max_pages: int = 100, concurrency: int = 5, delay_secs: float = 1.0, timeout_secs = 15):
-        self.start_urls = start_urls
+    def __init__(self, start_urls: List[str]=None, max_pages: int = 100, concurrency: int = 5, delay_secs: float = 1.0, timeout_secs = 15):
+        self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
         self.delay_secs = delay_secs
         self.timeout_secs = timeout_secs
@@ -79,17 +79,24 @@ class Crawler:
     async def worker(self):
         while True:
             try:
-                item = await self.queue.get()
+                try:
+                    item = await asyncio.wait_for(
+                        self.queue.get(),
+                        timeout=self.timeout_secs
+                    )
+                except asyncio.TimeoutError:
+                    if self.stop_signal.is_set() or self.queue.empty():
+                        logger.info("Worker exiting: queue idle timeout reached")
+                        return
+                    continue
                 priority, url = item
                 if url is None:
                     return
                 
                 if self.stop_signal.is_set():
-                    self.queue.task_done()
                     break
 
                 if url in self.visited:
-                    self.queue.task_done()
                     continue
                 
                 domain = get_base_domain(url)
@@ -98,7 +105,6 @@ class Crawler:
                 
                 if self.domain_locks[domain].locked():
                     await self.queue.put((priority + 0.1, url))
-                    self.queue.task_done()
                     continue
                 
                 if url not in self.start_urls:
@@ -106,7 +112,6 @@ class Crawler:
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
                         logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
                         await self.queue.put((new_priority, url))
-                        self.queue.task_done()
                         continue
                 
                 logger.info(f"Fetching: {url}")
@@ -131,7 +136,6 @@ class Crawler:
                 if self.pages_fetched >= self.max_pages:
                     logger.info(f"Reached max_pages limit of {self.max_pages}")
                     self.stop_signal.set()
-                    self.queue.task_done()
                     break
                 
                 links = get_links(html, url)
