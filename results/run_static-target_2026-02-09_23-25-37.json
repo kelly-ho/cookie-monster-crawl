@@ -1,0 +1,43 @@
+{
+    "timestamp": "2026-02-09_23-25-37",
+    "total_fetched": 100,
+    "recipes_found": 93,
+    "harvest_efficiency_percent": 93.0,
+    "domain_breakdown": {
+        "www.gimmesomeoven.com": 1,
+        "www.skinnytaste.com": 1,
+        "www.seriouseats.com": 1,
+        "www.bonappetit.com": 11,
+        "loveandlemons.com": 1,
+        "www.tasteofhome.com": 11,
+        "www.food.com": 9,
+        "sallysbakingaddiction.com": 1,
+        "www.thekitchn.com": 1,
+        "cooking.nytimes.com": 17,
+        "pinchofyum.com": 1,
+        "natashaskitchen.com": 1,
+        "www.allrecipes.com": 11,
+        "www.epicurious.com": 16,
+        "smittenkitchen.com": 2,
+        "www.budgetbytes.com": 1,
+        "www.kingarthurbaking.com": 7,
+        "cookieandkate.com": 1,
+        "onceuponachef.com": 1,
+        "minimalistbaker.com": 1,
+        "www.bbcgoodfood.com": 6,
+        "www.americastestkitchen.com": 17,
+        "www.simplyrecipes.com": 1,
+        "www.recipetineats.com": 1
+    },
+    "avg_latency_seconds": 0.275,
+    "total_duration_seconds": 36.58,
+    "pages_per_second": 2.73,
+    "blocked_domains": [],
+    "config": {
+        "max_pages": 100,
+        "concurrency": 5,
+        "delay_secs": 1.0,
+        "timeout_secs": 15
+    },
+    "notes": "underlying motivation pattern matching was trying to distinguish infra/nav/recipe pages. matching patterns to segments is more successful at this. also, leaf nodes weren't being considered without a slash at the end"
+}

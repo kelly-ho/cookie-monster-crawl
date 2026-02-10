@@ -13,12 +13,25 @@ FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip')
 
 class URLPrioritizer:
     def __init__(self, lsh_threshold=0.4, num_perm=128):
-        self.recipe_patterns = re.compile(r'/(?:recipe(?!s)|cook|make|instructions|bake)/')
-        self.non_recipe_patterns = re.compile(
-            r'/(guide|review|blog|article|tag|category|author|search|'
-            r'member|login|cart|shop|holiday|index|how-to|recipes|'
-            r'budget|ideas|collection|story|shopping)/'
-        )
+        self.infrastructure_segments = {
+            'author', 'login', 'cart', 'shop', 'shopping', 'member',
+            'search', 'tag', 'feed', 'atom', 'rss', 'sitemap',
+            'privacy', 'privacy-policy', 'terms', 'terms-and-conditions',
+            'contact', 'contact-us', 'about', 'legal', 'disclaimer',
+            'subscribe', 'newsletter', 'account', 'settings', 'profile',
+            'press', 'accessibility-statement', 'cookie-policy',
+        }
+        self.navigational_segments = {
+            'category', 'collection', 'guide', 'review', 'blog',
+            'article', 'index', 'ideas', 'how-to', 'howto',
+            'holiday', 'holidays', 'feature', 'news', 'news-trends',
+            'story', 'budget', 'travel', 'us',
+        }
+        self.recipe_related_segments = {
+            'recipe', 'recipes', 'cook', 'bake', 'instructions',
+            'main-course', 'courses', 'proteins', 'dietary',
+            'main-ingredient', 'cooking-method',
+        }
         
         self.num_perm = num_perm
         self.lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
@@ -68,6 +81,49 @@ class URLPrioritizer:
             return -0.8  # Reward specific titles
         return 0.0
     
+    def _score_segments(self, segments: list) -> float:
+        """
+        Score URL based on segment-level analysis.
+        - Reward longer URL slug length for leaf segments
+        - Categorize mid-path segments for context (recipe related, infra, nav)
+        """
+        if not segments:
+            return 0
+
+        score = 0.0
+        leaf = segments[-1]
+        mid_path = segments[:-1]
+
+        leaf_words = [w for w in leaf.split('-') if w]
+        leaf_word_count = len(leaf_words)
+
+        if leaf in self.infrastructure_segments:
+            score += 2.0
+        elif leaf in self.navigational_segments:
+            score += 0.8
+        elif leaf_word_count == 1:
+            # Single word leaf is likely an index page
+            if leaf in self.recipe_related_segments:
+                score += 0.3
+            else:
+                score += 0.5
+        elif leaf_word_count == 2:
+            score += 0.1
+        elif leaf_word_count == 3:
+            score -= 0.5
+        elif leaf_word_count >= 4:
+            score -= 1.0
+
+        for seg in mid_path:
+            if seg in self.infrastructure_segments:
+                score += 1.5
+            elif seg in self.navigational_segments:
+                score += 0.3
+            elif seg in self.recipe_related_segments:
+                score -= 0.4
+
+        return score
+    
     def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> float:
         if url.lower().endswith(FILE_EXTENSIONS):
             return 0.99
@@ -82,12 +138,7 @@ class URLPrioritizer:
             if success_rate < 0.2:
                 score += 2  # Heavy penalty for proven dead branches
 
-        recipe_matches = self.recipe_patterns.findall(path)
-        non_recipe_matches = self.non_recipe_patterns.findall(path)
-
-        # lower score means higher priority
-        score -= (len(recipe_matches) * 0.8)
-        score += (len(non_recipe_matches) * 1.2)
+        score += self._score_segments(segments)
         
         # Penalize frequent domains for diversity
         if domain_counts:
