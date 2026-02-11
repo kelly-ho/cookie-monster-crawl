@@ -50,16 +50,16 @@ def _contains_recipe_schema(data: any) -> bool:
     """Recursively check if data contains Recipe schema."""
     if isinstance(data, dict):
         node_type = data.get("@type")
-        types = node_type if isinstance(node_type, list) else [node_type]
-        if "Recipe" in types:
-            return True
-        for value in data.values():
-            if _contains_recipe_schema(value):
+        if node_type:
+            types = node_type if isinstance(node_type, list) else [node_type]
+            if any(
+                isinstance(t, str) and t.rsplit("/", 1)[-1] == "Recipe"
+                for t in types
+            ):
                 return True
-    elif isinstance(data, list):
-        for item in data:
-            if _contains_recipe_schema(item):
-                return True
+        return any(_contains_recipe_schema(v) for v in data.values())
+    if isinstance(data, list):
+        return any(_contains_recipe_schema(item) for item in data)
     return False
 
 

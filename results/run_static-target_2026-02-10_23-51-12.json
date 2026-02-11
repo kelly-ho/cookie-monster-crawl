@@ -1,0 +1,41 @@
+{
+    "timestamp": "2026-02-10_23-51-12",
+    "total_fetched": 100,
+    "recipes_found": 96,
+    "harvest_efficiency_percent": 96.0,
+    "domain_breakdown": {
+        "www.skinnytaste.com": 1,
+        "cookieandkate.com": 1,
+        "www.kingarthurbaking.com": 2,
+        "www.epicurious.com": 16,
+        "www.budgetbytes.com": 1,
+        "smittenkitchen.com": 2,
+        "www.simplyrecipes.com": 1,
+        "www.seriouseats.com": 1,
+        "www.bbcgoodfood.com": 8,
+        "sallysbakingaddiction.com": 1,
+        "pinchofyum.com": 1,
+        "www.americastestkitchen.com": 18,
+        "www.gimmesomeoven.com": 1,
+        "www.bonappetit.com": 14,
+        "www.allrecipes.com": 13,
+        "loveandlemons.com": 1,
+        "www.recipetineats.com": 1,
+        "minimalistbaker.com": 1,
+        "www.tasteofhome.com": 10,
+        "www.food.com": 11,
+        "cooking.nytimes.com": 15,
+        "onceuponachef.com": 1
+    },
+    "avg_latency_seconds": 0.294,
+    "total_duration_seconds": 36.61,
+    "pages_per_second": 2.73,
+    "blocked_domains": [],
+    "config": {
+        "max_pages": 100,
+        "concurrency": 5,
+        "delay_secs": 1.0,
+        "timeout_secs": 15
+    },
+    "notes": "generalize recipe schema check; previously didn't consider json-ld type to be more verbose, ex. https://schema.org/Recipe"
+}
