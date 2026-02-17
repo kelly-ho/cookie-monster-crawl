@@ -19,14 +19,30 @@ HEADERS = {
 }
 
 class Crawler:
-    def __init__(self, start_urls: List[str]=None, max_pages: int = 100, concurrency: int = 5, delay_secs: float = 1.0, timeout_secs = 15):
+    def __init__(
+        self, 
+        start_urls: List[str]=None, 
+        max_pages: int = 100, 
+        concurrency: int = 5, 
+        delay_secs: float = 1.0, 
+        timeout_secs = 15,
+        infrastructure_file='infrastructure_segments.txt',
+        navigational_file='navigational_segments.txt',
+        recipe_related_file='recipe_related_segments.txt',
+        max_score_threshold=0.80
+    ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
         self.delay_secs = delay_secs
         self.timeout_secs = timeout_secs
         self.max_pages = max_pages
-        self.robots_checker = RobotsChecker(user_agent=HEADERS["User-Agent"])
-        self.url_prioritizer = URLPrioritizer()
+        self.robots_checker = RobotsChecker(headers=HEADERS)
+        self.url_prioritizer = URLPrioritizer(
+            infrastructure_file=infrastructure_file,
+            navigational_file=navigational_file,
+            recipe_related_file=recipe_related_file,
+            max_score_threshold=max_score_threshold
+        )
 
         self.queue = AsyncPriorityQueue()
         self.visited: Set[str] = set()
@@ -143,9 +159,12 @@ class Crawler:
                     if link not in self.queued:
                         if await self.robots_checker.is_allowed(link):
                             priority_score = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
-                            logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
-                            await self.queue.put((priority_score, link))
-                            self.queued.add(link)
+                            if priority_score <= self.url_prioritizer.max_score_threshold:
+                                logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
+                                await self.queue.put((priority_score, link))
+                                self.queued.add(link)
+                            else:
+                                logger.debug(f"Filtered: {link} (score {priority_score:.3f} > threshold {self.url_prioritizer.max_score_threshold})")
                         else:
                             domain = get_base_domain(link)
                             self.blocked_domains.add(domain)

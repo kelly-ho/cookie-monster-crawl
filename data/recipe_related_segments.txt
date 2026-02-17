@@ -1,0 +1,11 @@
+recipe
+recipes
+cook
+bake
+instructions
+main-course
+courses
+proteins
+dietary
+main-ingredient
+cooking-method

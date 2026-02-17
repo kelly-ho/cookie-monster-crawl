@@ -1,6 +1,6 @@
 import logging
 from urllib.robotparser import RobotFileParser
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 import re
 import aiohttp
 from urllib.parse import urlparse
@@ -8,35 +8,40 @@ import numpy as np
 from datasketch import MinHash, MinHashLSH
 from cookie_monster_crawl.parser import get_base_domain
 from collections import defaultdict
+from pathlib import Path
 
 FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip')
 
+def _load_segments_from_file(filename: str) -> Set[str]:
+    """Load URL segments from a text file in the data folder."""
+    data_dir = Path(__file__).parent.parent / "data"
+    filepath = data_dir / filename
+    try:
+        with open(filepath, 'r') as f:
+            return {line.strip() for line in f if line.strip()}
+    except FileNotFoundError:
+        logging.warning(f"Segment file not found: {filepath}")
+        return set()
+
 class URLPrioritizer:
-    def __init__(self, lsh_threshold=0.4, num_perm=128):
-        self.infrastructure_segments = {
-            'author', 'login', 'cart', 'shop', 'shopping', 'member',
-            'search', 'tag', 'feed', 'atom', 'rss', 'sitemap',
-            'privacy', 'privacy-policy', 'terms', 'terms-and-conditions',
-            'contact', 'contact-us', 'about', 'legal', 'disclaimer',
-            'subscribe', 'newsletter', 'account', 'settings', 'profile',
-            'press', 'accessibility-statement', 'cookie-policy',
-        }
-        self.navigational_segments = {
-            'category', 'collection', 'guide', 'review', 'blog',
-            'article', 'index', 'ideas', 'how-to', 'howto',
-            'holiday', 'holidays', 'feature', 'news', 'news-trends',
-            'story', 'budget', 'travel', 'us',
-        }
-        self.recipe_related_segments = {
-            'recipe', 'recipes', 'cook', 'bake', 'instructions',
-            'main-course', 'courses', 'proteins', 'dietary',
-            'main-ingredient', 'cooking-method',
-        }
+    def __init__(
+        self, 
+        lsh_threshold=0.4, 
+        num_perm=128,
+        infrastructure_file='infrastructure_segments.txt',
+        navigational_file='navigational_segments.txt',
+        recipe_related_file='recipe_related_segments.txt',
+        max_score_threshold=0.80
+    ):
+        self.infrastructure_segments = _load_segments_from_file(infrastructure_file)
+        self.navigational_segments = _load_segments_from_file(navigational_file)
+        self.recipe_related_segments = _load_segments_from_file(recipe_related_file)
         
         self.num_perm = num_perm
         self.lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
         self.junk_counter = 0
         self.rescore_sensitivity = 0.3
+        self.max_score_threshold = max_score_threshold
         # { "domain": { "path_root": [success_count, total_count] } }
         self.domain_path_stats = defaultdict(lambda: defaultdict(lambda: [0, 0]))
 
@@ -159,13 +164,10 @@ class URLPrioritizer:
 
 
 class RobotsChecker:
-    def __init__(self, user_agent: str):
-        self.user_agent = user_agent
+    def __init__(self, headers: Dict[str, str]):
+        self.user_agent = headers.get("User-Agent", "UnknownBot")
         self.parsers: Dict[str, Optional[RobotFileParser]] = {}
-        self.fetch_headers = {
-            "User-Agent": user_agent,
-            "Accept": "text/plain"
-        }
+        self.fetch_headers = headers.copy()
         self.logger = logging.getLogger(__name__)
             
     async def _load_robots_txt(self, domain: str) -> Optional[RobotFileParser]:
