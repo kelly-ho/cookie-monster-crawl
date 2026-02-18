@@ -60,8 +60,8 @@ class Crawler:
         self.crawl_start_time: Optional[float] = None
         self.crawl_end_time: Optional[float] = None
 
-    async def fetch(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
-        '''Fetch HTML content from a URL asynchronously with domain-level locking.'''
+    async def fetch(self, session: aiohttp.ClientSession, url: str, retry_count: int = 0, max_retries: int = 3) -> Optional[str]:
+        '''Fetch HTML content from a URL asynchronously with domain-level locking and exponential backoff for retryable errors.'''
         domain = get_base_domain(url)
         
         if domain not in self.domain_locks:
@@ -87,10 +87,18 @@ class Crawler:
                         self.latencies.append(latency)
                         self.domain_stats[domain] += 1
                         return html
-                    logger.warning(f"Unexpected status {response.status} for {url}")
+                    elif response.status in {429, 500, 502, 503, 504} and retry_count < max_retries:
+                        backoff_time = (2 ** retry_count) * 2
+                        logger.warning(f"Status {response.status} for {url}, retrying in {backoff_time}s (attempt {retry_count + 1}/{max_retries})")
+                        await asyncio.sleep(backoff_time)
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.warning(f"Failed to fetch {url}: {e}")
-            return None
+                return None
+        
+        if retry_count < max_retries:
+            return await self.fetch(session, url, retry_count + 1, max_retries)
+        
+        return None
             
     async def worker(self):
         while True:

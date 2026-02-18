@@ -1,5 +1,6 @@
 category
 collection
+collections
 guide
 review
 blog
@@ -17,3 +18,6 @@ story
 budget
 travel
 us
+slideshow
+gallery
+roundup

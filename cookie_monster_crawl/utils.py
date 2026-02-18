@@ -125,7 +125,7 @@ class URLPrioritizer:
             elif seg in self.navigational_segments:
                 score += 0.3
             elif seg in self.recipe_related_segments:
-                score -= 0.4
+                score -= 0.3
 
         return score
     
