@@ -133,7 +133,6 @@ class URLPrioritizer:
         if url.lower().endswith(FILE_EXTENSIONS):
             return 0.99
 
-        # TODO: add segment analysis
         domain, path, segments, root = self._get_path_info(url)
         score = 0.4 
 

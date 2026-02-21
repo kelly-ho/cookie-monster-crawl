@@ -10,6 +10,7 @@ from collections import defaultdict
 from cookie_monster_crawl.parser import get_links, get_recipe_data, get_base_domain
 from cookie_monster_crawl.utils import RobotsChecker, URLPrioritizer
 from cookie_monster_crawl.priority_queue import AsyncPriorityQueue
+import argparse
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -296,6 +297,15 @@ class Crawler:
             return []
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Cookie Monster Recipe Crawler")
+    parser.add_argument("--max-pages", type=int, default=100, help="Max pages to crawl (default: 100)")
+    parser.add_argument("--concurrency", type=int, default=5, help="Number of concurrent workers (default: 5)")
+    parser.add_argument("--delay", type=float, default=1.0, help="Delay between requests in seconds (default: 1.0)")
+    parser.add_argument("--timeout", type=float, default=15, help="Request timeout in seconds (default: 15)")
+    parser.add_argument("--max-score", type=float, default=0.80, help="Max score threshold for URL filtering (default: 0.80)")
+    parser.add_argument("--seeds", type=str, default=None, help="Path to seed URLs JSON file (default: data/static-target.json)")
+    args = parser.parse_args()
+
     os.makedirs("logs", exist_ok=True)
     log_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log"
     log_path = os.path.join("logs", log_name)
@@ -306,6 +316,13 @@ if __name__ == "__main__":
     ])
     config["force"] = True
     logging.basicConfig(**config)
-    cookie_monster = Crawler()
-    cookie_monster.load_seeds()
+
+    cookie_monster = Crawler(
+        max_pages=args.max_pages,
+        concurrency=args.concurrency,
+        delay_secs=args.delay,
+        timeout_secs=args.timeout,
+        max_score_threshold=args.max_score,
+    )
+    cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())

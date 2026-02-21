@@ -30,22 +30,6 @@ def get_links(html: str, base_url: str) -> Dict[str, str]:
     return links
 
 
-def is_recipe_page(html: str) -> bool:
-    """
-    Detect if a page contains recipe structured data (JSON-LD Recipe schema).
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    scripts = soup.find_all("script", {"type": "application/ld+json"})
-    for script in scripts:
-        try:
-            data = json.loads(script.string)
-            if _contains_recipe_schema(data):
-                return True
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return False
-
-
 def _contains_recipe_schema(data: any) -> bool:
     """Recursively check if data contains Recipe schema."""
     if isinstance(data, dict):

@@ -59,8 +59,8 @@ class TestCrawlerFetch:
         mock_session = MagicMock() 
         mock_session.get.return_value.__aenter__.return_value = mock_response
         
-        with patch.object(crawler.robots_checker, 'is_allowed', return_value=True), \
-             patch.object(crawler.robots_checker, 'get_crawl_delay', return_value=0), \
+        with patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
+             patch.object(crawler.robots_checker, 'get_crawl_delay', new_callable=AsyncMock, return_value=0), \
              patch('cookie_monster_crawl.parser.get_base_domain', return_value="smores.com"):
             
             result = await crawler.fetch(mock_session, "https://smores.com")
@@ -74,7 +74,7 @@ class TestCrawlerFetch:
         crawler = Crawler(start_urls=start_urls)
         mock_session = AsyncMock()
         
-        with patch.object(crawler.robots_checker, 'is_allowed', return_value=False):
+        with patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=False):
             result = await crawler.fetch(mock_session, "https://smores.com/blocked")
         
         assert result is None
@@ -92,8 +92,8 @@ class TestCrawlerFetch:
         mock_session.get.return_value.__aenter__.return_value = mock_response
         
         with patch('cookie_monster_crawl.parser.get_base_domain', return_value="smores.com"), \
-            patch.object(crawler.robots_checker, 'is_allowed', return_value=True), \
-            patch.object(crawler.robots_checker, 'get_crawl_delay', return_value=0):
+            patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
+            patch.object(crawler.robots_checker, 'get_crawl_delay', new_callable=AsyncMock, return_value=0):
             
             result = await crawler.fetch(mock_session, "https://smores.com/notfound")
         assert result is None
@@ -110,8 +110,8 @@ class TestCrawlerFetch:
         mock_session = MagicMock()
         mock_session.get.return_value.__aenter__.return_value = mock_response
         
-        with patch.object(crawler.robots_checker, 'is_allowed', return_value=True):
-            with patch.object(crawler.robots_checker, 'get_crawl_delay', return_value=0):
+        with patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True):
+            with patch.object(crawler.robots_checker, 'get_crawl_delay', new_callable=AsyncMock, return_value=0):
                 result = await crawler.fetch(mock_session, "https://smores.com/api")
         
         assert result is None
@@ -125,8 +125,8 @@ class TestCrawlerFetch:
         mock_session = MagicMock()
         mock_session.get.side_effect = asyncio.TimeoutError()
         
-        with patch.object(crawler.robots_checker, 'is_allowed', return_value=True):
-            with patch.object(crawler.robots_checker, 'get_crawl_delay', return_value=0):
+        with patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True):
+            with patch.object(crawler.robots_checker, 'get_crawl_delay', new_callable=AsyncMock, return_value=0):
                 result = await crawler.fetch(mock_session, "https://smores.com")
         
         assert result is None
@@ -144,11 +144,67 @@ class TestCrawlerFetch:
         mock_session = MagicMock()
         mock_session.get.return_value.__aenter__.return_value = mock_response
         
-        with patch.object(crawler.robots_checker, 'is_allowed', return_value=True):
-            with patch.object(crawler.robots_checker, 'get_crawl_delay', return_value=0.5):
+        with patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True):
+            with patch.object(crawler.robots_checker, 'get_crawl_delay', new_callable=AsyncMock, return_value=0.5):
                 with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
                     result = await crawler.fetch(mock_session, "https://smores.com")
                     mock_sleep.assert_called_once_with(0.5)
+
+    @pytest.mark.asyncio
+    async def test_fetch_429_retry(self):
+        """Test fetch retries on 429 status."""
+        start_urls = ["https://smores.com"]
+        crawler = Crawler(start_urls=start_urls)
+        
+        # First call returns 429, second returns 200
+        mock_response_429 = AsyncMock()
+        mock_response_429.status = 429
+        mock_response_429.headers = {"Content-Type": "text/html"}
+        
+        mock_response_200 = AsyncMock()
+        mock_response_200.status = 200
+        mock_response_200.headers = {"Content-Type": "text/html"}
+        mock_response_200.text.return_value = "<html>success</html>"
+        
+        mock_session = MagicMock()
+        mock_session.get.return_value.__aenter__.side_effect = [mock_response_429, mock_response_200]
+        
+        with patch('cookie_monster_crawl.parser.get_base_domain', return_value="smores.com"), \
+            patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
+            patch.object(crawler.robots_checker, 'get_crawl_delay', new_callable=AsyncMock, return_value=0), \
+            patch('asyncio.sleep', new_callable=AsyncMock):
+            
+            result = await crawler.fetch(mock_session, "https://smores.com")
+        
+        assert result == "<html>success</html>"
+        assert mock_session.get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_5xx_retry(self):
+        """Test fetch retries on 503 status."""
+        start_urls = ["https://smores.com"]
+        crawler = Crawler(start_urls=start_urls)
+        
+        mock_response_503 = AsyncMock()
+        mock_response_503.status = 503
+        mock_response_503.headers = {"Content-Type": "text/html"}
+        
+        mock_response_200 = AsyncMock()
+        mock_response_200.status = 200
+        mock_response_200.headers = {"Content-Type": "text/html"}
+        mock_response_200.text.return_value = "<html>recovered</html>"
+        
+        mock_session = MagicMock()
+        mock_session.get.return_value.__aenter__.side_effect = [mock_response_503, mock_response_200]
+        
+        with patch('cookie_monster_crawl.parser.get_base_domain', return_value="smores.com"), \
+            patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
+            patch.object(crawler.robots_checker, 'get_crawl_delay', new_callable=AsyncMock, return_value=0), \
+            patch('asyncio.sleep', new_callable=AsyncMock):
+            
+            result = await crawler.fetch(mock_session, "https://smores.com")
+        
+        assert result == "<html>recovered</html>"
 
 
 class TestCrawlerSaveResults:
