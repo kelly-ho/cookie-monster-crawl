@@ -12,6 +12,8 @@ from pathlib import Path
 
 FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip')
 
+logger = logging.getLogger(__name__)
+
 def _load_segments_from_file(filename: str) -> Set[str]:
     """Load URL segments from a text file in the data folder."""
     data_dir = Path(__file__).parent.parent / "data"
@@ -41,6 +43,7 @@ class URLPrioritizer:
         self.lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
         self.junk_counter = 0
         self.rescore_sensitivity = 0.3
+        self.lock_penalty = 0.1
         self.max_score_threshold = max_score_threshold
         # { "domain": { "path_root": [success_count, total_count] } }
         self.domain_path_stats = defaultdict(lambda: defaultdict(lambda: [0, 0]))
@@ -133,33 +136,38 @@ class URLPrioritizer:
         if url.lower().endswith(FILE_EXTENSIONS):
             return 0.99
 
-        domain, path, segments, root = self._get_path_info(url)
-        score = 0.4 
-
+        domain, _, segments, root = self._get_path_info(url)
         stats = self.domain_path_stats[domain].get(root)
-        if stats:
-            success_rate = stats[0] / stats[1]
-            if success_rate < 0.2:
-                score += 2  # Heavy penalty for proven dead branches
-
-        score += self._score_segments(segments)
-        
-        # Penalize frequent domains for diversity
-        if domain_counts:
-            domain = get_base_domain(url)
-            fetch_count = domain_counts.get(domain, 0)
-            score += (fetch_count * 0.05)
-
-        if anchor_text:
-            score += self._score_anchor_complexity(anchor_text)
 
         m = self._get_minhash(url)
         similar_junk = self.lsh.query(m)
-        if similar_junk:
-            score += (len(similar_junk) * 1.5)
+
+        total_domain = sum(domain_counts.values()) if domain_counts else 1
+        domain_share = domain_counts.get(get_base_domain(url), 0) / total_domain if domain_counts else 0.0
+
+        components = {
+            "base":        0.4,
+            "dead_branch": 2.0 if stats and (stats[0] / stats[1]) < 0.2 else 0.0,
+            "segments":    self._score_segments(segments),
+            "domain":      domain_share * 0.5,
+            "anchor":      self._score_anchor_complexity(anchor_text) if anchor_text else 0.0,
+            "lsh":         len(similar_junk) * 1.5,
+        }
+
+        raw = sum(components.values())
+        final = 1 / (1 + np.exp(-raw))
+
+        logger.debug("score_tracker: %s", {
+            "url": url, **components,
+            "raw_score": round(raw, 4),
+            "final_score": round(final, 4),
+            "path_stats": f"{stats[0]}/{stats[1]}" if stats else None,
+            "anchor_text": anchor_text or None,
+            "lsh_matches": len(similar_junk),
+        })
 
         # TODO: Compare z score to sigmoid
-        return 1 / (1 + np.exp(-score))
+        return final
 
 
 class RobotsChecker:

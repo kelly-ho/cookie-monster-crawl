@@ -114,7 +114,7 @@ class Crawler:
                         logger.info("Worker exiting: queue idle timeout reached")
                         return
                     continue
-                priority, url = item
+                priority, (url, anchor_text) = item
                 if url is None:
                     return
                 
@@ -129,14 +129,14 @@ class Crawler:
                     self.domain_locks[domain] = asyncio.Lock()
                 
                 if self.domain_locks[domain].locked():
-                    await self.queue.put((priority + 0.1, url))
+                    await self.queue.put((priority + self.url_prioritizer.lock_penalty, (url, anchor_text)))
                     continue
                 
                 if url not in self.start_urls:
-                    new_priority = self.url_prioritizer.calculate_score(url, self.domain_stats)                    
+                    new_priority = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)                    
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
                         logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
-                        await self.queue.put((new_priority, url))
+                        await self.queue.put((new_priority, (url, anchor_text)))
                         continue
                 
                 logger.info(f"Fetching: {url}")
@@ -170,7 +170,7 @@ class Crawler:
                             priority_score = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
                             if priority_score <= self.url_prioritizer.max_score_threshold:
                                 logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
-                                await self.queue.put((priority_score, link))
+                                await self.queue.put((priority_score, (link, anchor_text)))
                                 self.queued.add(link)
                             else:
                                 logger.debug(f"Filtered: {link} (score {priority_score:.3f} > threshold {self.url_prioritizer.max_score_threshold})")
@@ -185,7 +185,7 @@ class Crawler:
     async def crawl(self):
         self.crawl_start_time = time.time()
         for url in self.start_urls:
-            self.queue.put_nowait((-float('inf'), url))
+            self.queue.put_nowait((-float('inf'), (url, "")))
             self.queued.add(url)
         async with aiohttp.ClientSession() as session:
             self.session = session

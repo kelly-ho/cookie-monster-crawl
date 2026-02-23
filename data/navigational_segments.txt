@@ -21,3 +21,4 @@ us
 slideshow
 gallery
 roundup
+video

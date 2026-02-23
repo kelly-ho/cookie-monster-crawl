@@ -29,23 +29,21 @@ def get_links(html: str, base_url: str) -> Dict[str, str]:
             links[final_url] = anchor_text
     return links
 
-
-def _contains_recipe_schema(data: any) -> bool:
-    """Recursively check if data contains Recipe schema."""
-    if isinstance(data, dict):
-        node_type = data.get("@type")
-        if node_type:
-            types = node_type if isinstance(node_type, list) else [node_type]
-            if any(
-                isinstance(t, str) and t.rsplit("/", 1)[-1] == "Recipe"
-                for t in types
-            ):
-                return True
-        return any(_contains_recipe_schema(v) for v in data.values())
-    if isinstance(data, list):
-        return any(_contains_recipe_schema(item) for item in data)
-    return False
-
+def _try_load_json(raw_str: str) -> Optional[dict]:
+    """Helper to handle standard and malformed JSON-LD."""
+    try:
+        return json.loads(raw_str)
+    except json.JSONDecodeError:
+        # Step 2: Self-clean literal newlines inside values
+        sanitized = re.sub(
+            r'("(?:[^"\\]|\\.)*")', 
+            lambda m: m.group(1).replace('\n', '\\n').replace('\r', '\\r'), 
+            raw_str
+        )
+        try:
+            return json.loads(sanitized)
+        except Exception:
+            return None
 
 def get_recipe_data(html: str, url: str) -> Optional[dict]:
     """
@@ -57,7 +55,7 @@ def get_recipe_data(html: str, url: str) -> Optional[dict]:
     
     for script in scripts:
         try:
-            data = json.loads(script.string)
+            data = _try_load_json(script.get_text(strip=True))
             recipe = _extract_recipe_from_data(data)
             if recipe:
                 recipe["url"] = url
