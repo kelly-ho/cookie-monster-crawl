@@ -210,4 +210,6 @@ __marimo__/
 recipes.json
 notes.md
 logs/
+crawl_logs/
+results/
 .DS_Store

@@ -10,13 +10,21 @@ from collections import defaultdict
 from cookie_monster_crawl.parser import get_links, get_recipe_data, get_base_domain
 from cookie_monster_crawl.utils import RobotsChecker, URLPrioritizer
 from cookie_monster_crawl.priority_queue import AsyncPriorityQueue
+from cookie_monster_crawl.crawl_logger import CrawlLogger
 import argparse
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# HEADERS = {
+#     "User-Agent": "CookieMonsterCrawler/0.1 (+https://github.com/kelly-ho/cookie-monster-crawler)"
+# }
 HEADERS = {
-    "User-Agent": "CookieMonsterCrawler/0.1 (+https://github.com/kelly-ho/cookie-monster-crawler)"
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Referer': 'https://www.google.com/',
+    'DNT': '1', # Do Not Track
 }
 
 class Crawler:
@@ -30,7 +38,8 @@ class Crawler:
         infrastructure_file='infrastructure_segments.txt',
         navigational_file='navigational_segments.txt',
         recipe_related_file='recipe_related_segments.txt',
-        max_score_threshold=0.80
+        max_score_threshold=0.80,
+        enable_logging=True,
     ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
@@ -60,6 +69,7 @@ class Crawler:
         self.domain_stats: Dict[str, int] = defaultdict(int)
         self.crawl_start_time: Optional[float] = None
         self.crawl_end_time: Optional[float] = None
+        self.crawl_log: Optional[CrawlLogger] = CrawlLogger() if enable_logging else None
 
     async def fetch(self, session: aiohttp.ClientSession, url: str, retry_count: int = 0, max_retries: int = 3) -> Optional[str]:
         '''Fetch HTML content from a URL asynchronously with domain-level locking and exponential backoff for retryable errors.'''
@@ -104,16 +114,17 @@ class Crawler:
     async def worker(self):
         while True:
             try:
-                try:
-                    item = await asyncio.wait_for(
-                        self.queue.get(),
-                        timeout=self.timeout_secs
-                    )
-                except asyncio.TimeoutError:
-                    if self.stop_signal.is_set() or self.queue.empty():
-                        logger.info("Worker exiting: queue idle timeout reached")
-                        return
-                    continue
+                item = await asyncio.wait_for(
+                    self.queue.get(),
+                    timeout=self.timeout_secs
+                )
+            except asyncio.TimeoutError:
+                if self.stop_signal.is_set() or self.queue.empty():
+                    logger.info("Worker exiting: queue idle timeout reached")
+                    return
+                continue
+
+            try:
                 priority, (url, anchor_text) = item
                 if url is None:
                     return
@@ -133,9 +144,11 @@ class Crawler:
                     continue
                 
                 if url not in self.start_urls:
-                    new_priority = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)                    
+                    new_priority = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
                         logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
+                        if self.crawl_log:
+                            self.crawl_log.log_rescore(url, priority, new_priority)
                         await self.queue.put((new_priority, (url, anchor_text)))
                         continue
                 
@@ -144,12 +157,15 @@ class Crawler:
 
                 if url not in self.start_urls:
                     self.pages_fetched += 1
+                    if self.crawl_log:
+                        self.crawl_log.log_visit(url, priority, self.pages_fetched)
 
                 html = await self.fetch(self.session, url)
                 if not html:
                     continue
 
                 recipe = get_recipe_data(html, url)
+                links = get_links(html, url)
                 if recipe:
                     logger.info(f"Found recipe: {recipe['title']}")
                     self.recipes.append(recipe)
@@ -157,13 +173,22 @@ class Crawler:
                 else:
                     self.url_prioritizer.update_model(url, is_recipe=False)
 
+                if self.crawl_log and url not in self.start_urls:
+                    self.crawl_log.log_result(
+                        url=url,
+                        is_recipe=bool(recipe),
+                        recipe_title=recipe["title"] if recipe else None,
+                        links_found=len(links),
+                        cumulative_recipes=len(self.recipes),
+                        cumulative_pages=self.pages_fetched,
+                    )
+
                 # Check if we've hit page limit (excluding seed URLs)
                 if self.pages_fetched >= self.max_pages:
                     logger.info(f"Reached max_pages limit of {self.max_pages}")
                     self.stop_signal.set()
                     break
-                
-                links = get_links(html, url)
+
                 for link, anchor_text in links.items():
                     if link not in self.queued:
                         if await self.robots_checker.is_allowed(link):
@@ -172,15 +197,22 @@ class Crawler:
                                 logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
                                 await self.queue.put((priority_score, (link, anchor_text)))
                                 self.queued.add(link)
+                                if self.crawl_log:
+                                    self.crawl_log.log_discover(link, url, anchor_text, priority_score, self.domain_stats)
                             else:
                                 logger.debug(f"Filtered: {link} (score {priority_score:.3f} > threshold {self.url_prioritizer.max_score_threshold})")
+                                if self.crawl_log:
+                                    self.crawl_log.log_filter(link, "score_threshold", priority_score)
                         else:
                             domain = get_base_domain(link)
                             self.blocked_domains.add(domain)
+                            if self.crawl_log:
+                                self.crawl_log.log_filter(link, "robots_blocked")
             except Exception as e:
                 logger.error(f"Error processing {url}: {e}")
             finally:
                 self.queue.task_done()
+
 
     async def crawl(self):
         self.crawl_start_time = time.time()
@@ -193,6 +225,8 @@ class Crawler:
             # Wait for completion or cancellation due to limits
             await asyncio.gather(*workers, return_exceptions=True)
         self.crawl_end_time = time.time()
+        if self.crawl_log:
+            self.crawl_log.close()
         self.save_results()
         self.generate_report()
 
@@ -304,6 +338,7 @@ if __name__ == "__main__":
     parser.add_argument("--timeout", type=float, default=15, help="Request timeout in seconds (default: 15)")
     parser.add_argument("--max-score", type=float, default=0.80, help="Max score threshold for URL filtering (default: 0.80)")
     parser.add_argument("--seeds", type=str, default=None, help="Path to seed URLs JSON file (default: data/static-target.json)")
+    parser.add_argument("--no-log", action="store_true", help="Disable JSONL crawl event logging")
     args = parser.parse_args()
 
     os.makedirs("logs", exist_ok=True)
@@ -323,6 +358,7 @@ if __name__ == "__main__":
         delay_secs=args.delay,
         timeout_secs=args.timeout,
         max_score_threshold=args.max_score,
+        enable_logging=not args.no_log,
     )
     cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())
