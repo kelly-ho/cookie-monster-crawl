@@ -16,16 +16,9 @@ import argparse
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# HEADERS = {
-#     "User-Agent": "CookieMonsterCrawler/0.1 (+https://github.com/kelly-ho/cookie-monster-crawler)"
-# }
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Referer': 'https://www.google.com/',
-    'DNT': '1', # Do Not Track
-}
+HEADERS = {                                                     
+    "User-Agent": "CookieMonsterCrawler/0.1 (+https://github.com/kelly-ho/cookie-monster-crawler)"                  
+} 
 
 class Crawler:
     def __init__(
@@ -61,7 +54,7 @@ class Crawler:
         self.session: Optional[aiohttp.ClientSession] = None
         self.blocked_domains: Set[str] = set()
         self.stop_signal = asyncio.Event()
-        self.domain_locks: Dict[str, asyncio.Lock] = {}
+        self.domain_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         
         self.pages_fetched = 0
         self.seed_file_name = None
@@ -74,9 +67,6 @@ class Crawler:
     async def fetch(self, session: aiohttp.ClientSession, url: str, retry_count: int = 0, max_retries: int = 3) -> Optional[str]:
         '''Fetch HTML content from a URL asynchronously with domain-level locking and exponential backoff for retryable errors.'''
         domain = get_base_domain(url)
-        
-        if domain not in self.domain_locks:
-            self.domain_locks[domain] = asyncio.Lock()
         
         async with self.domain_locks[domain]:
             if not await self.robots_checker.is_allowed(url):
@@ -136,14 +126,12 @@ class Crawler:
                     continue
                 
                 domain = get_base_domain(url)
-                if domain not in self.domain_locks:
-                    self.domain_locks[domain] = asyncio.Lock()
-                
                 if self.domain_locks[domain].locked():
                     await self.queue.put((priority + self.url_prioritizer.lock_penalty, (url, anchor_text)))
                     continue
                 
-                if url not in self.start_urls:
+                is_seed = url in self.start_urls
+                if not is_seed:
                     new_priority = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
                         logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
@@ -151,11 +139,11 @@ class Crawler:
                             self.crawl_log.log_rescore(url, priority, new_priority)
                         await self.queue.put((new_priority, (url, anchor_text)))
                         continue
-                
+
                 logger.info(f"Fetching: {url}")
                 self.visited.add(url)
 
-                if url not in self.start_urls:
+                if not is_seed:
                     self.pages_fetched += 1
                     if self.crawl_log:
                         self.crawl_log.log_visit(url, priority, self.pages_fetched)
