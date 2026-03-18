@@ -33,6 +33,13 @@ class CrawlLogger:
         self._file.flush()
         self._event_count += 1
 
+    def log_seed(self, url: str):
+        """Log a seed URL at crawl start."""
+        self._write({
+            "type": "seed",
+            "url": url,
+        })
+
     def log_discover(
         self,
         url: str,
@@ -40,6 +47,7 @@ class CrawlLogger:
         anchor_text: str,
         score: float,
         domain_counts: Dict[str, int],
+        score_components: Optional[Dict[str, float]] = None,
     ):
         """Log when a new URL is discovered from a page."""
         self._write({
@@ -48,6 +56,7 @@ class CrawlLogger:
             "source_url": source_url,
             "anchor_text": anchor_text,
             "score": round(score, 6),
+            "score_components": score_components or {},
             "domain_counts_snapshot": dict(domain_counts) if domain_counts else {},
         })
 

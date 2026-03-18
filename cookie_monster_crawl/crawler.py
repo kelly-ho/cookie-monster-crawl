@@ -132,7 +132,7 @@ class Crawler:
                 
                 is_seed = url in self.start_urls
                 if not is_seed:
-                    new_priority = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
+                    new_priority, _ = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
                         logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
                         if self.crawl_log:
@@ -180,13 +180,13 @@ class Crawler:
                 for link, anchor_text in links.items():
                     if link not in self.queued:
                         if await self.robots_checker.is_allowed(link):
-                            priority_score = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
+                            priority_score, score_components = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
                             if priority_score <= self.url_prioritizer.max_score_threshold:
                                 logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
                                 await self.queue.put((priority_score, (link, anchor_text)))
                                 self.queued.add(link)
                                 if self.crawl_log:
-                                    self.crawl_log.log_discover(link, url, anchor_text, priority_score, self.domain_stats)
+                                    self.crawl_log.log_discover(link, url, anchor_text, priority_score, self.domain_stats, score_components)
                             else:
                                 logger.debug(f"Filtered: {link} (score {priority_score:.3f} > threshold {self.url_prioritizer.max_score_threshold})")
                                 if self.crawl_log:
@@ -207,6 +207,8 @@ class Crawler:
         for url in self.start_urls:
             self.queue.put_nowait((-float('inf'), (url, "")))
             self.queued.add(url)
+            if self.crawl_log:
+                self.crawl_log.log_seed(url)
         async with aiohttp.ClientSession() as session:
             self.session = session
             workers = [asyncio.create_task(self.worker()) for _ in range(self.concurrency)]

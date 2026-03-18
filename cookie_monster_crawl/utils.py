@@ -132,9 +132,9 @@ class URLPrioritizer:
 
         return score
     
-    def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> float:
+    def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> tuple[float, dict]:
         if url.lower().endswith(FILE_EXTENSIONS):
-            return 0.99
+            return 0.99, {}
 
         domain, _, segments, root = self._get_path_info(url)
         stats = self.domain_path_stats[domain].get(root)
@@ -166,7 +166,7 @@ class URLPrioritizer:
             "lsh_matches": len(similar_junk),
         })
 
-        return final
+        return final, {k: round(v, 6) for k, v in components.items()}
 
 
 class RobotsChecker:
