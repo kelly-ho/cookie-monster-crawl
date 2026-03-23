@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, List, Set, Dict
 from collections import defaultdict
 from cookie_monster_crawl.parser import get_links, get_recipe_data, get_base_domain
-from cookie_monster_crawl.utils import RobotsChecker, URLPrioritizer
+from cookie_monster_crawl.utils import RobotsChecker, URLPrioritizer, DEFAULT_SCORING
 from cookie_monster_crawl.priority_queue import AsyncPriorityQueue
 from cookie_monster_crawl.crawl_logger import CrawlLogger
 import argparse
@@ -20,19 +20,33 @@ HEADERS = {
     "User-Agent": "CookieMonsterCrawler/0.1 (+https://github.com/kelly-ho/cookie-monster-crawler)"                  
 } 
 
+def load_crawl_config(filepath: str = None) -> dict:
+    """Load crawl_config.json, falling back to DEFAULT_SCORING if not found."""
+    if filepath is None:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        filepath = os.path.join(project_root, "data", "crawl_config.json")
+    try:
+        with open(filepath) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.warning(f"Config file not found: {filepath}, using defaults")
+        return {"scoring": DEFAULT_SCORING}
+
+
 class Crawler:
     def __init__(
-        self, 
-        start_urls: List[str]=None, 
-        max_pages: int = 100, 
-        concurrency: int = 5, 
-        delay_secs: float = 1.0, 
+        self,
+        start_urls: List[str]=None,
+        max_pages: int = 100,
+        concurrency: int = 5,
+        delay_secs: float = 1.0,
         timeout_secs = 15,
         infrastructure_file='infrastructure_segments.txt',
         navigational_file='navigational_segments.txt',
         recipe_related_file='recipe_related_segments.txt',
-        max_score_threshold=0.80,
+        max_score_threshold: float = None,
         enable_logging=True,
+        crawl_config: dict = None,
     ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
@@ -40,11 +54,14 @@ class Crawler:
         self.timeout_secs = timeout_secs
         self.max_pages = max_pages
         self.robots_checker = RobotsChecker(headers=HEADERS)
+
+        scoring = (crawl_config or {}).get("scoring", {})
         self.url_prioritizer = URLPrioritizer(
             infrastructure_file=infrastructure_file,
             navigational_file=navigational_file,
             recipe_related_file=recipe_related_file,
-            max_score_threshold=max_score_threshold
+            scoring_config=scoring,
+            max_score_threshold=max_score_threshold,
         )
 
         self.queue = AsyncPriorityQueue()
@@ -329,26 +346,30 @@ if __name__ == "__main__":
     parser.add_argument("--max-score", type=float, default=0.80, help="Max score threshold for URL filtering (default: 0.80)")
     parser.add_argument("--seeds", type=str, default=None, help="Path to seed URLs JSON file (default: data/static-target.json)")
     parser.add_argument("--no-log", action="store_true", help="Disable JSONL crawl event logging")
+    parser.add_argument("--config", type=str, default=None, help="Path to crawl_config.json (default: data/crawl_config.json)")
     args = parser.parse_args()
 
     os.makedirs("logs", exist_ok=True)
     log_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log"
     log_path = os.path.join("logs", log_name)
     fmt = '%(asctime)s - %(levelname)s - %(message)s'
-    config = dict(level=logging.INFO, format=fmt, handlers=[
+    logging_config = dict(level=logging.INFO, format=fmt, handlers=[
         logging.FileHandler(log_path, mode="w", encoding="utf-8"),
         logging.StreamHandler(),
     ])
-    config["force"] = True
-    logging.basicConfig(**config)
+    logging_config["force"] = True
+    logging.basicConfig(**logging_config)
+
+    crawl_config = load_crawl_config(args.config)
 
     cookie_monster = Crawler(
         max_pages=args.max_pages,
         concurrency=args.concurrency,
         delay_secs=args.delay,
         timeout_secs=args.timeout,
-        max_score_threshold=args.max_score,
+        max_score_threshold=args.max_score if args.max_score != 0.80 else None,
         enable_logging=not args.no_log,
+        crawl_config=crawl_config,
     )
     cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())

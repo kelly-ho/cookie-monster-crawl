@@ -33,7 +33,40 @@ STRATEGY_SCHEMA = {
         "max_pages": "<int>",
         "concurrency": "<int>",
         "delay_secs": "<float>",
+    },
+    "scoring_config": {
         "max_score_threshold": "<float between 0.5 and 0.95>",
+        "rescore_sensitivity": "<float>",
+        "lock_penalty": "<float>",
+        "lsh_threshold": "<float>",
+        "num_perm": "<int>",
+        "components": {
+            "base": "<float>",
+            "dead_branch_penalty": "<float>",
+            "dead_branch_threshold": "<float between 0.0 and 1.0>",
+            "domain_multiplier": "<float>",
+            "lsh_multiplier": "<float>",
+        },
+        "anchor": {
+            "empty": "<float>",
+            "one_word": "<float>",
+            "two_three_words": "<float>",
+            "four_plus_words": "<float>",
+        },
+        "leaf": {
+            "infrastructure": "<float>",
+            "navigational": "<float>",
+            "recipe_single_word": "<float>",
+            "single_word_default": "<float>",
+            "two_words": "<float>",
+            "three_words": "<float>",
+            "four_plus_words": "<float>",
+        },
+        "mid": {
+            "infrastructure": "<float>",
+            "navigational": "<float>",
+            "recipe_related": "<float>",
+        },
     },
     "segment_additions": {
         "infrastructure": ["<segment string>"],
@@ -58,15 +91,26 @@ Segment lists control the scoring:
 - navigational_segments: mid-level navigational pages — penalized moderately
 - recipe_related_segments: path segments that indicate recipe index pages — rewarded moderately
 
+Scoring config controls all numeric weights. Key fields:
+- components.base: constant added to every URL's raw score
+- components.dead_branch_penalty: added when a path root has <dead_branch_threshold recipe rate
+- components.domain_multiplier: scales the domain share penalty (higher = more aggressive concentration penalty)
+- components.lsh_multiplier: scales the near-duplicate penalty per LSH match
+- anchor.*: penalties/rewards based on anchor text word count (lower = higher priority)
+- leaf.*: penalties/rewards for the last path segment by type and word count
+- mid.*: penalties/rewards for mid-path segments by type
+- max_score_threshold: URLs scoring above this are filtered entirely (0.5–0.95)
+- rescore_sensitivity: how much a score must worsen before a URL is requeued
+
 Your job: analyze a replay of a past crawl run and produce a JSON strategy document for the next run.
 
 Guidelines:
-- Domain concentration (one domain consuming >20% of budget) is a key problem to address
+- Domain concentration (one domain consuming >20% of budget) is a key problem — consider raising domain_multiplier
 - Seeds with 0 pages visited were likely starved by concentrated domains — consider whether to keep them
-- Filter samples showing legitimate recipe pages being filtered suggest the threshold is too aggressive
-- Filter samples showing non-recipe junk being correctly filtered suggest the threshold is working
-- Component analysis shows which scoring components actually differentiated recipes from non-recipes
+- Filter samples showing legitimate recipe pages being filtered suggest the threshold is too aggressive or leaf/mid weights need adjustment
+- Component analysis shows which scoring components actually differentiated recipes from non-recipes — tune weights accordingly
 - dead_branch and lsh both at 0.0 means the model hasn't learned from failures yet — this is expected early on
+- Only include scoring_config fields you want to change — omitted fields keep their current values
 
 Return only valid JSON matching the schema. No markdown, no code blocks, no explanation outside the JSON."""
 

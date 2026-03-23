@@ -14,6 +14,41 @@ FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip')
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SCORING = {
+    "lsh_threshold": 0.4,
+    "num_perm": 128,
+    "rescore_sensitivity": 0.3,
+    "lock_penalty": 0.1,
+    "max_score_threshold": 0.80,
+    "components": {
+        "base": 0.4,
+        "dead_branch_penalty": 2.0,
+        "dead_branch_threshold": 0.2,
+        "domain_multiplier": 0.5,
+        "lsh_multiplier": 1.5,
+    },
+    "anchor": {
+        "empty": 2.0,
+        "one_word": 1.0,
+        "two_three_words": 0.0,
+        "four_plus_words": -0.8,
+    },
+    "leaf": {
+        "infrastructure": 2.0,
+        "navigational": 0.8,
+        "recipe_single_word": 0.3,
+        "single_word_default": 0.5,
+        "two_words": 0.1,
+        "three_words": -0.5,
+        "four_plus_words": -1.0,
+    },
+    "mid": {
+        "infrastructure": 1.5,
+        "navigational": 0.3,
+        "recipe_related": -0.3,
+    },
+}
+
 def _load_segments_from_file(filename: str) -> Set[str]:
     """Load URL segments from a text file in the data folder."""
     data_dir = Path(__file__).parent.parent / "data"
@@ -27,24 +62,32 @@ def _load_segments_from_file(filename: str) -> Set[str]:
 
 class URLPrioritizer:
     def __init__(
-        self, 
-        lsh_threshold=0.4, 
-        num_perm=128,
+        self,
         infrastructure_file='infrastructure_segments.txt',
         navigational_file='navigational_segments.txt',
         recipe_related_file='recipe_related_segments.txt',
-        max_score_threshold=0.80
+        scoring_config: dict = None,
+        max_score_threshold: float = None,
     ):
         self.infrastructure_segments = _load_segments_from_file(infrastructure_file)
         self.navigational_segments = _load_segments_from_file(navigational_file)
         self.recipe_related_segments = _load_segments_from_file(recipe_related_file)
-        
-        self.num_perm = num_perm
-        self.lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
+
+        sc = DEFAULT_SCORING.copy()
+        if scoring_config:
+            for key, val in scoring_config.items():
+                if isinstance(val, dict) and key in sc and isinstance(sc[key], dict):
+                    sc[key] = {**sc[key], **val}
+                else:
+                    sc[key] = val
+        self.sc = sc
+
+        self.num_perm = sc["num_perm"]
+        self.lsh = MinHashLSH(threshold=sc["lsh_threshold"], num_perm=self.num_perm)
         self.junk_counter = 0
-        self.rescore_sensitivity = 0.3
-        self.lock_penalty = 0.1
-        self.max_score_threshold = max_score_threshold
+        self.rescore_sensitivity = sc["rescore_sensitivity"]
+        self.lock_penalty = sc["lock_penalty"]
+        self.max_score_threshold = max_score_threshold if max_score_threshold is not None else sc["max_score_threshold"]
         # { "domain": { "path_root": [success_count, total_count] } }
         self.domain_path_stats = defaultdict(lambda: defaultdict(lambda: [0, 0]))
 
@@ -79,15 +122,16 @@ class URLPrioritizer:
             self.lsh.insert(f"junk_{self.junk_counter}", m)
 
     def _score_anchor_complexity(self, anchor_text: str) -> float:
+        a = self.sc["anchor"]
         words = anchor_text.strip().split()
         word_count = len(words)
         if word_count == 0:
-            return 2.0
+            return a["empty"]
         elif word_count == 1:
-            return 1.0
+            return a["one_word"]
         elif word_count >= 4:
-            return -0.8  # Reward specific titles
-        return 0.0
+            return a["four_plus_words"]
+        return a["two_three_words"]
     
     def _score_segments(self, segments: list) -> float:
         """
@@ -105,30 +149,33 @@ class URLPrioritizer:
         leaf_words = [w for w in leaf.split('-') if w]
         leaf_word_count = len(leaf_words)
 
+        lf = self.sc["leaf"]
+        mid = self.sc["mid"]
+
         if leaf in self.infrastructure_segments:
-            score += 2.0
+            score += lf["infrastructure"]
         elif leaf in self.navigational_segments:
-            score += 0.8
+            score += lf["navigational"]
         elif leaf_word_count == 1:
             # Single word leaf is likely an index page
             if leaf in self.recipe_related_segments:
-                score += 0.3
+                score += lf["recipe_single_word"]
             else:
-                score += 0.5
+                score += lf["single_word_default"]
         elif leaf_word_count == 2:
-            score += 0.1
+            score += lf["two_words"]
         elif leaf_word_count == 3:
-            score -= 0.5
+            score += lf["three_words"]
         elif leaf_word_count >= 4:
-            score -= 1.0
+            score += lf["four_plus_words"]
 
         for seg in mid_path:
             if seg in self.infrastructure_segments:
-                score += 1.5
+                score += mid["infrastructure"]
             elif seg in self.navigational_segments:
-                score += 0.3
+                score += mid["navigational"]
             elif seg in self.recipe_related_segments:
-                score -= 0.3
+                score += mid["recipe_related"]
 
         return score
     
@@ -145,13 +192,14 @@ class URLPrioritizer:
         total_domain = sum(domain_counts.values()) if domain_counts else 1
         domain_share = domain_counts.get(get_base_domain(url), 0) / total_domain if domain_counts else 0.0
 
+        c = self.sc["components"]
         components = {
-            "base":        0.4,
-            "dead_branch": 2.0 if stats and (stats[0] / stats[1]) < 0.2 else 0.0,
+            "base":        c["base"],
+            "dead_branch": c["dead_branch_penalty"] if stats and (stats[0] / stats[1]) < c["dead_branch_threshold"] else 0.0,
             "segments":    self._score_segments(segments),
-            "domain":      domain_share * 0.5,
+            "domain":      domain_share * c["domain_multiplier"],
             "anchor":      self._score_anchor_complexity(anchor_text) if anchor_text else 0.0,
-            "lsh":         len(similar_junk) * 1.5,
+            "lsh":         len(similar_junk) * c["lsh_multiplier"],
         }
 
         raw = sum(components.values())

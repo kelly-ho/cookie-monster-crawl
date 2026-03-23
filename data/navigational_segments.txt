@@ -21,4 +21,6 @@ us
 slideshow
 gallery
 roundup
-video
+videocuisine
+ingredient
+type

@@ -189,14 +189,19 @@ class TestRobotsCheckerLoadRobotsTxt:
     async def test_load_robots_txt_handles_404(self):
         headers = {"User-Agent": "TestBot/1.0"}
         checker = RobotsChecker(headers=headers)
-        
-        mock_response = AsyncMock()
+
+        mock_response = MagicMock()
         mock_response.status = 404
-        
-        mock_session = AsyncMock()
-        mock_session.get.return_value.__aenter__.return_value = mock_response
-        mock_session.get.return_value.__aexit__.return_value = None
-        
+
+        mock_get = MagicMock()
+        mock_get.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_get)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
         with patch('aiohttp.ClientSession', return_value=mock_session):
             result = await checker._load_robots_txt("example.com")
             assert result is None
@@ -205,10 +210,16 @@ class TestRobotsCheckerLoadRobotsTxt:
     async def test_load_robots_txt_handles_connection_error(self):
         headers = {"User-Agent": "TestBot/1.0"}
         checker = RobotsChecker(headers=headers)
-        
-        mock_session = AsyncMock()
-        mock_session.get.side_effect = Exception("Connection timeout")
-        
+
+        mock_get = MagicMock()
+        mock_get.__aenter__ = AsyncMock(side_effect=Exception("Connection timeout"))
+        mock_get.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_get)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
         with patch('aiohttp.ClientSession', return_value=mock_session):
             result = await checker._load_robots_txt("example.com")
             assert result is None

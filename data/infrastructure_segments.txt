@@ -27,3 +27,6 @@ profile
 press
 accessibility-statement
 cookie-policy
+glossary
+newsletters
+user

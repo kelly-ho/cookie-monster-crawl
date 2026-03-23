@@ -9,3 +9,4 @@ proteins
 dietary
 main-ingredient
 cooking-method
+category

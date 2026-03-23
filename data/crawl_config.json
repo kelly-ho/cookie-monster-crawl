@@ -1,0 +1,36 @@
+{
+  "scoring": {
+    "lsh_threshold": 0.4,
+    "num_perm": 128,
+    "rescore_sensitivity": 0.3,
+    "lock_penalty": 0.1,
+    "max_score_threshold": 0.80,
+    "components": {
+      "base": 0.4,
+      "dead_branch_penalty": 2.0,
+      "dead_branch_threshold": 0.2,
+      "domain_multiplier": 0.5,
+      "lsh_multiplier": 1.5
+    },
+    "anchor": {
+      "empty": 2.0,
+      "one_word": 1.0,
+      "two_three_words": 0.0,
+      "four_plus_words": -0.8
+    },
+    "leaf": {
+      "infrastructure": 2.0,
+      "navigational": 0.8,
+      "recipe_single_word": 0.3,
+      "single_word_default": 0.5,
+      "two_words": 0.1,
+      "three_words": -0.5,
+      "four_plus_words": -1.0
+    },
+    "mid": {
+      "infrastructure": 1.5,
+      "navigational": 0.3,
+      "recipe_related": -0.3
+    }
+  }
+}
