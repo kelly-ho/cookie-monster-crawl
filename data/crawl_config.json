@@ -4,12 +4,12 @@
     "num_perm": 128,
     "rescore_sensitivity": 0.3,
     "lock_penalty": 0.1,
-    "max_score_threshold": 0.80,
+    "max_score_threshold": 0.8,
     "components": {
       "base": 0.4,
       "dead_branch_penalty": 2.0,
       "dead_branch_threshold": 0.2,
-      "domain_multiplier": 0.5,
+      "domain_multiplier": 8.0,
       "lsh_multiplier": 1.5
     },
     "anchor": {

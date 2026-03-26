@@ -47,12 +47,14 @@ class Crawler:
         max_score_threshold: float = None,
         enable_logging=True,
         crawl_config: dict = None,
+        domain_cap: int = 50,
     ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
         self.delay_secs = delay_secs
         self.timeout_secs = timeout_secs
         self.max_pages = max_pages
+        self.domain_cap = domain_cap
         self.robots_checker = RobotsChecker(headers=HEADERS)
 
         scoring = (crawl_config or {}).get("scoring", {})
@@ -72,7 +74,8 @@ class Crawler:
         self.blocked_domains: Set[str] = set()
         self.stop_signal = asyncio.Event()
         self.domain_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        
+        self.domain_queue_counts: Dict[str, int] = defaultdict(int)
+
         self.pages_fetched = 0
         self.seed_file_name = None
         self.latencies: List[float] = []
@@ -135,19 +138,20 @@ class Crawler:
                 priority, (url, anchor_text) = item
                 if url is None:
                     return
-                
+
                 if self.stop_signal.is_set():
                     break
 
+                domain = get_base_domain(url)
+                is_seed = url in self.start_urls
+
                 if url in self.visited:
                     continue
-                
-                domain = get_base_domain(url)
+
                 if self.domain_locks[domain].locked():
                     await self.queue.put((priority + self.url_prioritizer.lock_penalty, (url, anchor_text)))
                     continue
                 
-                is_seed = url in self.start_urls
                 if not is_seed:
                     new_priority, _ = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
@@ -161,6 +165,7 @@ class Crawler:
                 self.visited.add(url)
 
                 if not is_seed:
+                    self.domain_queue_counts[domain] -= 1
                     self.pages_fetched += 1
                     if self.crawl_log:
                         self.crawl_log.log_visit(url, priority, self.pages_fetched)
@@ -178,7 +183,7 @@ class Crawler:
                 else:
                     self.url_prioritizer.update_model(url, is_recipe=False)
 
-                if self.crawl_log and url not in self.start_urls:
+                if self.crawl_log and not is_seed:
                     self.crawl_log.log_result(
                         url=url,
                         is_recipe=bool(recipe),
@@ -196,12 +201,18 @@ class Crawler:
 
                 for link, anchor_text in links.items():
                     if link not in self.queued:
+                        link_domain = get_base_domain(link)
+                        if self.domain_queue_counts[link_domain] >= self.domain_cap:
+                            if self.crawl_log:
+                                self.crawl_log.log_filter(link, "domain_cap")
+                            continue
                         if await self.robots_checker.is_allowed(link):
                             priority_score, score_components = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
                             if priority_score <= self.url_prioritizer.max_score_threshold:
                                 logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
                                 await self.queue.put((priority_score, (link, anchor_text)))
                                 self.queued.add(link)
+                                self.domain_queue_counts[link_domain] += 1
                                 if self.crawl_log:
                                     self.crawl_log.log_discover(link, url, anchor_text, priority_score, self.domain_stats, score_components)
                             else:
@@ -209,8 +220,7 @@ class Crawler:
                                 if self.crawl_log:
                                     self.crawl_log.log_filter(link, "score_threshold", priority_score)
                         else:
-                            domain = get_base_domain(link)
-                            self.blocked_domains.add(domain)
+                            self.blocked_domains.add(link_domain)
                             if self.crawl_log:
                                 self.crawl_log.log_filter(link, "robots_blocked")
             except Exception as e:
@@ -347,6 +357,7 @@ if __name__ == "__main__":
     parser.add_argument("--seeds", type=str, default=None, help="Path to seed URLs JSON file (default: data/static-target.json)")
     parser.add_argument("--no-log", action="store_true", help="Disable JSONL crawl event logging")
     parser.add_argument("--config", type=str, default=None, help="Path to crawl_config.json (default: data/crawl_config.json)")
+    parser.add_argument("--domain-cap", type=int, default=50, help="Max URLs per domain allowed in queue at once (default: 50)")
     args = parser.parse_args()
 
     os.makedirs("logs", exist_ok=True)
@@ -370,6 +381,7 @@ if __name__ == "__main__":
         max_score_threshold=args.max_score if args.max_score != 0.80 else None,
         enable_logging=not args.no_log,
         crawl_config=crawl_config,
+        domain_cap=args.domain_cap,
     )
     cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())

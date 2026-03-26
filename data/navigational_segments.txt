@@ -24,3 +24,4 @@ roundup
 videocuisine
 ingredient
 type
+meal

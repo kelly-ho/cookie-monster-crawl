@@ -30,3 +30,5 @@ cookie-policy
 glossary
 newsletters
 user
+print
+video
