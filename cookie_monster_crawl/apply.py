@@ -5,7 +5,7 @@ Reads a strategy JSON produced by strategy.py and applies:
   - Seed changes to data/static-target.json
   - Segment additions to data/*.txt files
 
-Crawler params are printed as a reminder but not auto-applied.
+Policy changes are printed as suggested CLI flags but not auto-applied.
 
 Usage:
     python -m cookie_monster_crawl.apply <strategy_json> [options]
@@ -13,14 +13,12 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 SEEDS_FILE = DATA_DIR / "static-target.json"
-CONFIG_FILE = DATA_DIR / "crawl_config.json"
 SEGMENT_FILES = {
     "infrastructure": DATA_DIR / "infrastructure_segments.txt",
     "navigational": DATA_DIR / "navigational_segments.txt",
@@ -45,11 +43,6 @@ def load_seeds(filepath: Path) -> list[str]:
 def load_segments(filepath: Path) -> set[str]:
     with open(filepath, encoding="utf-8") as f:
         return {line.strip() for line in f if line.strip()}
-
-
-def load_config(filepath: Path) -> dict:
-    with open(filepath, encoding="utf-8") as f:
-        return json.load(f)
 
 
 # ---------------------------------------------------------------------------
@@ -85,28 +78,6 @@ def compute_seed_diff(strategy: dict, current_seeds: list[str]) -> dict:
     }
 
 
-def compute_config_diff(strategy: dict, current_config: dict) -> dict:
-    """Compute which scoring config values would change."""
-    proposed = strategy.get("scoring_config", {})
-    if not proposed:
-        return {}
-
-    current_scoring = current_config.get("scoring", {})
-    changes = {}
-
-    def _diff(current: dict, proposed: dict, path: str = ""):
-        for key, val in proposed.items():
-            full_key = f"{path}.{key}" if path else key
-            current_val = current.get(key)
-            if isinstance(val, dict) and isinstance(current_val, dict):
-                _diff(current_val, val, full_key)
-            elif val != current_val:
-                changes[full_key] = {"from": current_val, "to": val}
-
-    _diff(current_scoring, proposed)
-    return changes
-
-
 def compute_segment_diffs(strategy: dict) -> dict[str, dict]:
     additions = strategy.get("segment_additions", {})
     diffs = {}
@@ -129,9 +100,27 @@ def compute_segment_diffs(strategy: dict) -> dict[str, dict]:
 # Print diff
 # ---------------------------------------------------------------------------
 
-def print_diff(strategy: dict, seed_diff: dict, segment_diffs: dict[str, dict], config_diff: dict = None):
+def print_diff(strategy: dict, seed_diff: dict, segment_diffs: dict[str, dict]):
     print(f"\nSTRATEGY: {strategy.get('based_on_log', '(unknown log)')}")
     print(f"File:     {strategy.get('timestamp', '')}")
+
+    features = strategy.get("feature_proposals", [])
+    if features:
+        print(f"\n{'─'*60}")
+        print("FEATURE PROPOSALS  (requires code changes)")
+        print(f"{'─'*60}")
+        for feat in features:
+            print(f"  {feat.get('name', '?')}")
+            print(f"    {feat.get('description', '')}")
+            print(f"    Computation: {feat.get('computation', '')}")
+
+    policies = strategy.get("policy_proposals", [])
+    if policies:
+        print(f"\n{'─'*60}")
+        print("POLICY PROPOSALS  (requires design decisions)")
+        print(f"{'─'*60}")
+        for p in policies:
+            print(f"  - {p}")
 
     print(f"\n{'─'*60}")
     print(f"SEEDS  ({SEEDS_FILE})")
@@ -165,35 +154,6 @@ def print_diff(strategy: dict, seed_diff: dict, segment_diffs: dict[str, dict], 
     if not any_changes:
         print("  (no new segment additions)")
 
-    if config_diff:
-        print(f"\n{'─'*60}")
-        print(f"SCORING CONFIG  ({CONFIG_FILE.name})")
-        print(f"{'─'*60}")
-        for key, change in config_diff.items():
-            print(f"  {key}: {change['from']} → {change['to']}")
-    elif strategy.get("scoring_config"):
-        print(f"\n{'─'*60}")
-        print(f"SCORING CONFIG  ({CONFIG_FILE.name})")
-        print(f"{'─'*60}")
-        print("  (no changes from current config)")
-
-    params = strategy.get("crawler_params", {})
-    scoring = strategy.get("scoring_config", {})
-    cli_parts = []
-    if params.get("max_pages"):
-        cli_parts.append(f"--max-pages {params['max_pages']}")
-    if params.get("concurrency"):
-        cli_parts.append(f"--concurrency {params['concurrency']}")
-    if params.get("delay_secs"):
-        cli_parts.append(f"--delay {params['delay_secs']}")
-    if scoring.get("max_score_threshold"):
-        cli_parts.append(f"--max-score {scoring['max_score_threshold']}")
-    if cli_parts:
-        print(f"\n{'─'*60}")
-        print("CRAWLER PARAMS  (apply manually)")
-        print(f"{'─'*60}")
-        print(f"  {' '.join(cli_parts)}")
-
     print()
 
 
@@ -212,24 +172,6 @@ def write_segments(segment_diffs: dict[str, dict]):
             with open(diff["filepath"], "a", encoding="utf-8") as f:
                 for entry in diff["new_entries"]:
                     f.write(entry + "\n")
-
-
-def write_config(strategy: dict, current_config: dict, filepath: Path):
-    """Deep-merge strategy's scoring_config into current config and write."""
-    proposed = strategy.get("scoring_config", {})
-    scoring = current_config.get("scoring", {})
-
-    def _merge(base: dict, updates: dict):
-        for key, val in updates.items():
-            if isinstance(val, dict) and isinstance(base.get(key), dict):
-                _merge(base[key], val)
-            else:
-                base[key] = val
-
-    _merge(scoring, proposed)
-    current_config["scoring"] = scoring
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(current_config, f, indent=2)
 
 
 def confirm() -> bool:
@@ -253,19 +195,16 @@ def main():
 
     strategy = load_strategy(args.strategy_json)
     current_seeds = load_seeds(SEEDS_FILE)
-    current_config = load_config(CONFIG_FILE)
 
     seed_diff = compute_seed_diff(strategy, current_seeds)
     segment_diffs = compute_segment_diffs(strategy)
-    config_diff = compute_config_diff(strategy, current_config)
 
-    print_diff(strategy, seed_diff, segment_diffs, config_diff)
+    print_diff(strategy, seed_diff, segment_diffs)
 
     has_changes = (
         seed_diff["added"]
         or seed_diff["removed"]
         or any(d["new_entries"] for d in segment_diffs.values())
-        or bool(config_diff)
     )
 
     if not has_changes:
@@ -282,8 +221,6 @@ def main():
 
     write_seeds(seed_diff["new"], SEEDS_FILE)
     write_segments(segment_diffs)
-    if config_diff:
-        write_config(strategy, current_config, CONFIG_FILE)
     print("Applied.")
 
 

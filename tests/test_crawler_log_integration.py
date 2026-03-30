@@ -39,7 +39,7 @@ class TestLogVisit:
         crawler = make_crawler()
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={}):
             await run_worker(crawler, [(0.5, PAGE, "Pasta")])
@@ -66,7 +66,7 @@ class TestLogResult:
         crawler = make_crawler()
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=RECIPE), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={}):
             await run_worker(crawler, [(0.5, PAGE, "Pasta")])
@@ -84,7 +84,7 @@ class TestLogResult:
         crawler = make_crawler()
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={}):
             await run_worker(crawler, [(0.5, PAGE, "")])
@@ -99,7 +99,7 @@ class TestLogResult:
         two_links = {LINK: "link one", "https://a.com/other": "link two"}
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value=two_links):
@@ -124,7 +124,7 @@ class TestLogDiscover:
         crawler = make_crawler()
         # First call: rescore check for PAGE → no rescore
         # Second call: score for LINK → below threshold, queued
-        calculate_score = MagicMock(side_effect=[(0.5, {}), (0.4, {})])
+        calculate_score = MagicMock(side_effect=[(0.5, {}, {}), (0.4, {}, {})])
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
              patch.object(crawler.url_prioritizer, 'calculate_score', calculate_score), \
@@ -146,7 +146,7 @@ class TestLogDiscover:
         crawler.queued.add(LINK)
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "a link"}):
@@ -161,7 +161,7 @@ class TestLogFilter:
         crawler = make_crawler()
         # First call: rescore check for PAGE → 0.5, no rescore
         # Second call: score for LINK → 0.95, above threshold
-        calculate_score = MagicMock(side_effect=[(0.5, {}), (0.95, {})])
+        calculate_score = MagicMock(side_effect=[(0.5, {}, {}), (0.95, {}, {})])
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
              patch.object(crawler.url_prioritizer, 'calculate_score', calculate_score), \
@@ -181,7 +181,7 @@ class TestLogFilter:
         crawler = make_crawler()
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=False), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "click"}):
@@ -197,7 +197,7 @@ class TestLogFilter:
         crawler = make_crawler()
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=False), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "click"}):
@@ -214,7 +214,7 @@ class TestLogRescore:
         # Queued at 0.3, rescores to 0.7:  0.7 > 0.3 + 0.3 → triggers rescore
         # Second dequeue at 0.7, rescores to 0.7: 0.7 > 0.7 + 0.3 = 1.0 → no rescore
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=None), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.7, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.7, {}, {})), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={}):
             await run_worker(crawler, [(0.3, PAGE, "Pasta")])
@@ -230,7 +230,7 @@ class TestLogRescore:
         crawler = make_crawler()
         # Queued at 0.5, rescores to 0.5: 0.5 > 0.5 + 0.3 = 0.8 → no rescore
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=None), \
-             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {})), \
+             patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
              patch('cookie_monster_crawl.crawler.get_links', return_value={}):
             await run_worker(crawler, [(0.5, PAGE, "")])

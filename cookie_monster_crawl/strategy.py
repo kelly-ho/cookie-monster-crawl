@@ -11,6 +11,7 @@ Usage:
 import argparse
 import json
 import os
+import pickle
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,95 +25,93 @@ STRATEGY_SCHEMA = {
     "timestamp": "<ISO timestamp>",
     "based_on_log": "<logfile path>",
     "previous_strategy": "<strategy file path or null>",
+    "feature_proposals": [
+        {
+            "name": "<snake_case feature name>",
+            "description": "<what this feature captures and why it would help>",
+            "computation": "<how to compute from URL structure, anchor text, or crawl state>",
+        }
+    ],
+    "policy_proposals": [
+        "<description of a new crawling strategy, architectural change, or approach to try>"
+    ],
     "seeds": {
         "keep": ["<homepage URL>"],
         "remove": ["<homepage URL>"],
         "add": ["<homepage URL>"],
-    },
-    "crawler_params": {
-        "max_pages": "<int>",
-        "concurrency": "<int>",
-        "delay_secs": "<float>",
-    },
-    "scoring_config": {
-        "max_score_threshold": "<float between 0.5 and 0.95>",
-        "rescore_sensitivity": "<float>",
-        "lock_penalty": "<float>",
-        "lsh_threshold": "<float>",
-        "num_perm": "<int>",
-        "components": {
-            "base": "<float>",
-            "dead_branch_penalty": "<float>",
-            "dead_branch_threshold": "<float between 0.0 and 1.0>",
-            "domain_multiplier": "<float>",
-            "lsh_multiplier": "<float>",
-        },
-        "anchor": {
-            "empty": "<float>",
-            "one_word": "<float>",
-            "two_three_words": "<float>",
-            "four_plus_words": "<float>",
-        },
-        "leaf": {
-            "infrastructure": "<float>",
-            "navigational": "<float>",
-            "recipe_single_word": "<float>",
-            "single_word_default": "<float>",
-            "two_words": "<float>",
-            "three_words": "<float>",
-            "four_plus_words": "<float>",
-        },
-        "mid": {
-            "infrastructure": "<float>",
-            "navigational": "<float>",
-            "recipe_related": "<float>",
-        },
     },
     "segment_additions": {
         "infrastructure": ["<segment string>"],
         "navigational": ["<segment string>"],
         "recipe_related": ["<segment string>"],
     },
-    "budget_notes": "<plain text explanation of budget allocation reasoning>",
-    "reasoning": "<plain text explanation of all decisions>",
-    "summary": "<2-3 sentence human-readable summary of key changes and why>",
+    "reasoning": "<plain text explanation tying analysis to proposals>",
+    "summary": "<2-3 sentence human-readable summary>",
 }
 
 SYSTEM_PROMPT = """You are a crawl strategy advisor for a recipe web crawler called cookie-monster-crawl.
 
-The crawler works as follows:
-- It starts from seed URLs (recipe website homepages) and follows internal links
-- URLs are scored and prioritized using a min-heap priority queue (lower score = higher priority = crawled sooner)
-- Score components: base (constant 0.4), dead_branch (penalizes path roots with <20% recipe rate), segments (rewards/penalizes based on URL path keywords), domain_share (penalizes over-represented domains), anchor (rewards descriptive anchor text), lsh (penalizes near-duplicate URLs)
-- Final score = sigmoid(sum of components); URLs above max_score_threshold are filtered out entirely
+## Architecture
 
-Segment lists control the scoring:
-- infrastructure_segments: path segments that strongly indicate non-recipe pages (e.g. "author", "login") — penalized heavily
-- navigational_segments: mid-level navigational pages — penalized moderately
-- recipe_related_segments: path segments that indicate recipe index pages — rewarded moderately
+The crawler uses a learned scoring model to prioritize URLs:
 
-Scoring config controls all numeric weights. Key fields:
-- components.base: constant added to every URL's raw score
-- components.dead_branch_penalty: added when a path root has <dead_branch_threshold recipe rate
-- components.domain_multiplier: scales the domain share penalty (higher = more aggressive concentration penalty)
-- components.lsh_multiplier: scales the near-duplicate penalty per LSH match
-- anchor.*: penalties/rewards based on anchor text word count (lower = higher priority)
-- leaf.*: penalties/rewards for the last path segment by type and word count
-- mid.*: penalties/rewards for mid-path segments by type
-- max_score_threshold: URLs scoring above this are filtered entirely (0.5–0.95)
-- rescore_sensitivity: how much a score must worsen before a URL is requeued
+1. **Feature extraction**: Each discovered URL is converted to raw features based on its structure. Current features:
+   - domain_share: fraction of crawled pages from this domain
+   - lsh_count: number of near-duplicate URLs already seen (MinHash LSH)
+   - dead_branch: 1 if the URL's path root has <20% recipe rate, else 0
+   - anchor_word_count: number of words in the link's anchor text
+   - path_depth: number of URL path segments
+   - leaf_word_count: number of hyphen-separated words in the last path segment
+   - leaf_is_infrastructure, leaf_is_navigational, leaf_is_recipe_related: 1 if leaf segment matches keyword lists
+   - mid_infrastructure, mid_nav, mid_recipe: counts of mid-path segments matching keyword lists
 
-Your job: analyze a replay of a past crawl run and produce a JSON strategy document for the next run.
+2. **Learned model**: Logistic regression on these features predicts P(non-recipe). This probability is used as the priority score (lower = more likely recipe = crawled first). The model is retrained after each crawl run.
+
+3. **Segment keyword lists** (infrastructure_segments.txt, navigational_segments.txt, recipe_related_segments.txt) control which URL path segments trigger the leaf_is_* and mid_* features.
+
+## Your job
+
+Your primary role is to propose **structural improvements** to the crawler — not to tune numbers. Specifically:
+
+1. **Feature proposals** (most important): Propose new raw features that would help the model distinguish recipe URLs from non-recipe URLs. Good features are computable from URL structure, anchor text, or crawl state without fetching the page. Each proposal should include a name, what it captures, and how to compute it.
+
+2. **Policy proposals**: Propose new crawling strategies or architectural changes. Examples: new deduplication approaches, multi-phase crawling, link graph analysis, domain-specific handling. Think beyond parameter tuning.
+
+3. **Seeds and segments**: Curate the seed list and segment keyword lists based on what the data shows. This is secondary to feature and policy proposals.
 
 Guidelines:
-- Domain concentration (one domain consuming >20% of budget) is a key problem — consider raising domain_multiplier
-- Seeds with 0 pages visited were likely starved by concentrated domains — consider whether to keep them
-- Filter samples showing legitimate recipe pages being filtered suggest the threshold is too aggressive or leaf/mid weights need adjustment
-- Component analysis shows which scoring components actually differentiated recipes from non-recipes — tune weights accordingly
-- dead_branch and lsh both at 0.0 means the model hasn't learned from failures yet — this is expected early on
-- Only include scoring_config fields you want to change — omitted fields keep their current values
+- Look at which features have zero or near-zero coefficients — they may need richer signal or may be poorly defined
+- Look at the gap between the strongest and weakest features — what information is the model missing?
+- Consider what signals a human would use to guess if a URL leads to a recipe page, then propose features that capture those signals
+- For policy proposals, think about what the crawler's architecture fundamentally can't do right now
+- Be specific and concrete in proposals — not "improve scoring" but "add has_date_in_path feature because recipe blogs use /YYYY/MM/slug patterns"
 
 Return only valid JSON matching the schema. No markdown, no code blocks, no explanation outside the JSON."""
+
+
+def load_model_info(model_path: str) -> dict | None:
+    """Load model metadata and coefficients for strategy context."""
+    try:
+        with open(model_path, "rb") as f:
+            data = pickle.load(f)
+        model = data["model"]
+        feature_names = data["feature_names"]
+        clf = model.named_steps["clf"]
+        scaler = model.named_steps["scaler"]
+        coefs = clf.coef_[0] / scaler.scale_
+        return {
+            "feature_names": feature_names,
+            "coefficients": {
+                name: round(float(coef), 4)
+                for name, coef in zip(feature_names, coefs)
+            },
+            "trained_at": data.get("trained_at"),
+            "n_samples": data.get("n_samples"),
+            "logfiles": data.get("logfiles"),
+        }
+    except Exception as e:
+        print(f"Warning: could not load model info from {model_path}: {e}", file=sys.stderr)
+        return None
 
 
 def load_json(filepath: str) -> dict:
@@ -147,25 +146,33 @@ def condense_replay(replay: dict) -> dict:
     return condensed
 
 
-def build_messages(replay: dict, previous_strategy: dict | None) -> list[dict]:
+def build_messages(replay: dict, previous_strategy: dict | None, model_info: dict | None = None) -> list[dict]:
     previous_str = json.dumps(previous_strategy, indent=2) if previous_strategy else "null — this is the first run"
+
+    model_section = ""
+    if model_info:
+        model_section = f"""
+## Current Model
+Trained on {model_info['n_samples']} samples.
+Feature coefficients (positive = predicts recipe, negative = predicts non-recipe):
+{json.dumps(model_info['coefficients'], indent=2)}
+"""
 
     user_content = f"""## Output Schema
 {json.dumps(STRATEGY_SCHEMA, indent=2)}
 
 ## Previous Strategy
 {previous_str}
-
+{model_section}
 ## Crawl Replay Analysis
 {json.dumps(replay, indent=2)}
 
 ## Instructions
-Analyze the replay data and produce a strategy document for the next crawl run.
-- Identify the top 2-3 problems visible in the data
-- Suggest concrete changes to seeds, crawler params, and segment lists
-- For seeds.add, provide full homepage URLs (e.g. "https://www.example.com")
-- Explain your reasoning in the reasoning field
-- Write a 2-3 sentence human-readable summary in the summary field
+Analyze the replay data and model performance, then produce a strategy.
+- Propose at least 2-3 new features that would improve the model
+- Propose at least 1 architectural or policy change
+- Curate seeds and segments based on what the data shows
+- Explain your reasoning, tying proposals to specific patterns in the data
 - Return only valid JSON matching the schema above"""
 
     return [{"role": "user", "content": user_content}]
@@ -213,14 +220,16 @@ def main():
     parser = argparse.ArgumentParser(description="Generate a crawl strategy from a replay analysis")
     parser.add_argument("replay_json", help="Path to replay --mode json output")
     parser.add_argument("--previous-strategy", default=None, help="Path to previous strategy JSON for iterative improvement")
+    parser.add_argument("--model", default=None, help="Path to trained model pkl (provides feature coefficients to LLM)")
     parser.add_argument("--output-dir", default="results", help="Directory to write strategy JSON (default: results)")
     args = parser.parse_args()
 
     replay = load_json(args.replay_json)
     previous = load_json(args.previous_strategy) if args.previous_strategy else None
+    model_info = load_model_info(args.model) if args.model else None
 
     condensed = condense_replay(replay)
-    messages = build_messages(condensed, previous)
+    messages = build_messages(condensed, previous, model_info)
 
     print("Calling Claude Opus...", file=sys.stderr)
     response = call_claude(messages)

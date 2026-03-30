@@ -1,4 +1,5 @@
 import logging
+import pickle
 from urllib.robotparser import RobotFileParser
 from typing import Dict, Optional, Set
 import re
@@ -68,6 +69,7 @@ class URLPrioritizer:
         recipe_related_file='recipe_related_segments.txt',
         scoring_config: dict = None,
         max_score_threshold: float = None,
+        model_path: str = None,
     ):
         self.infrastructure_segments = _load_segments_from_file(infrastructure_file)
         self.navigational_segments = _load_segments_from_file(navigational_file)
@@ -90,6 +92,15 @@ class URLPrioritizer:
         self.max_score_threshold = max_score_threshold if max_score_threshold is not None else sc["max_score_threshold"]
         # { "domain": { "path_root": [success_count, total_count] } }
         self.domain_path_stats = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+
+        self.model = None
+        self.model_feature_names = None
+        if model_path:
+            with open(model_path, "rb") as f:
+                data = pickle.load(f)
+            self.model = data["model"]
+            self.model_feature_names = data["feature_names"]
+            logger.info(f"Loaded scoring model from {model_path}")
 
     def _get_path_info(self, url: str):
         """Helper to extract consistent segments and root."""
@@ -179,9 +190,42 @@ class URLPrioritizer:
 
         return score
     
-    def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> tuple[float, dict]:
+    def extract_features(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> dict:
+        """Extract raw, config-independent features for model training and inference."""
         if url.lower().endswith(FILE_EXTENSIONS):
-            return 0.99, {}
+            return {}
+
+        domain, _, segments, root = self._get_path_info(url)
+        stats = self.domain_path_stats[domain].get(root)
+        similar_junk = self.lsh.query(self._get_minhash(url))
+
+        total_domain = sum(domain_counts.values()) if domain_counts else 1
+        domain_share = domain_counts.get(get_base_domain(url), 0) / total_domain if domain_counts else 0.0
+
+        leaf = segments[-1] if segments else ""
+        mid_path = segments[:-1]
+        leaf_words = [w for w in leaf.split('-') if w]
+
+        is_dead_branch = bool(stats and (stats[0] / stats[1]) < self.sc["components"]["dead_branch_threshold"])
+
+        return {
+            "domain_share":           round(domain_share, 6),
+            "lsh_count":              len(similar_junk),
+            "dead_branch":            int(is_dead_branch),
+            "anchor_word_count":      len(anchor_text.strip().split()) if anchor_text.strip() else 0,
+            "path_depth":             len(segments),
+            "leaf_word_count":        len(leaf_words),
+            "leaf_is_infrastructure": int(leaf in self.infrastructure_segments),
+            "leaf_is_navigational":   int(leaf in self.navigational_segments),
+            "leaf_is_recipe_related": int(leaf in self.recipe_related_segments),
+            "mid_infrastructure":     sum(1 for s in mid_path if s in self.infrastructure_segments),
+            "mid_nav":                sum(1 for s in mid_path if s in self.navigational_segments),
+            "mid_recipe":             sum(1 for s in mid_path if s in self.recipe_related_segments),
+        }
+
+    def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> tuple[float, dict, dict]:
+        if url.lower().endswith(FILE_EXTENSIONS):
+            return 0.99, {}, {}
 
         domain, _, segments, root = self._get_path_info(url)
         stats = self.domain_path_stats[domain].get(root)
@@ -214,7 +258,28 @@ class URLPrioritizer:
             "lsh_matches": len(similar_junk),
         })
 
-        return final, {k: round(v, 6) for k, v in components.items()}
+        raw_features = {
+            "domain_share":           round(domain_share, 6),
+            "lsh_count":              len(similar_junk),
+            "dead_branch":            int(bool(stats and (stats[0] / stats[1]) < c["dead_branch_threshold"])),
+            "anchor_word_count":      len(anchor_text.strip().split()) if anchor_text.strip() else 0,
+            "path_depth":             len(segments),
+            "leaf_word_count":        len([w for w in (segments[-1] if segments else "").split('-') if w]),
+            "leaf_is_infrastructure": int(segments[-1] in self.infrastructure_segments if segments else False),
+            "leaf_is_navigational":   int(segments[-1] in self.navigational_segments if segments else False),
+            "leaf_is_recipe_related": int(segments[-1] in self.recipe_related_segments if segments else False),
+            "mid_infrastructure":     sum(1 for s in segments[:-1] if s in self.infrastructure_segments),
+            "mid_nav":                sum(1 for s in segments[:-1] if s in self.navigational_segments),
+            "mid_recipe":             sum(1 for s in segments[:-1] if s in self.recipe_related_segments),
+        }
+
+        if self.model is not None:
+            feature_vector = [[raw_features.get(f, 0.0) for f in self.model_feature_names]]
+            # P(non-recipe): high = likely junk = deprioritized; low = likely recipe = high priority
+            model_score = float(self.model.predict_proba(feature_vector)[0][0])
+            return model_score, {}, raw_features
+
+        return float(final), {k: round(v, 6) for k, v in components.items()}, raw_features
 
 
 class RobotsChecker:

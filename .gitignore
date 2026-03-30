@@ -214,3 +214,5 @@ logs/
 crawl_logs/
 results/
 .DS_Store
+memory/
+models/

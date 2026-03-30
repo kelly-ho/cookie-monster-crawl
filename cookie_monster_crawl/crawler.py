@@ -3,6 +3,7 @@ import aiohttp
 import json
 import logging
 import os
+import random
 import time
 from datetime import datetime
 from typing import Optional, List, Set, Dict
@@ -48,6 +49,8 @@ class Crawler:
         enable_logging=True,
         crawl_config: dict = None,
         domain_cap: int = 50,
+        explore_fraction: float = 0.0,
+        model_path: str = None,
     ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
@@ -55,6 +58,7 @@ class Crawler:
         self.timeout_secs = timeout_secs
         self.max_pages = max_pages
         self.domain_cap = domain_cap
+        self.explore_fraction = explore_fraction
         self.robots_checker = RobotsChecker(headers=HEADERS)
 
         scoring = (crawl_config or {}).get("scoring", {})
@@ -64,6 +68,7 @@ class Crawler:
             recipe_related_file=recipe_related_file,
             scoring_config=scoring,
             max_score_threshold=max_score_threshold,
+            model_path=model_path,
         )
 
         self.queue = AsyncPriorityQueue()
@@ -153,7 +158,7 @@ class Crawler:
                     continue
                 
                 if not is_seed:
-                    new_priority, _ = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
+                    new_priority, _, _ = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
                         logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
                         if self.crawl_log:
@@ -207,14 +212,20 @@ class Crawler:
                                 self.crawl_log.log_filter(link, "domain_cap")
                             continue
                         if await self.robots_checker.is_allowed(link):
-                            priority_score, score_components = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
-                            if priority_score <= self.url_prioritizer.max_score_threshold:
-                                logger.debug(f"Queueing link: {link} with priority {priority_score:.3f}")
-                                await self.queue.put((priority_score, (link, anchor_text)))
+                            priority_score, score_components, raw_features = self.url_prioritizer.calculate_score(link, self.domain_stats, anchor_text)
+                            exploring = bool(
+                                self.explore_fraction > 0
+                                and random.random() < self.explore_fraction
+                                and priority_score > self.url_prioritizer.max_score_threshold
+                            )
+                            if priority_score <= self.url_prioritizer.max_score_threshold or exploring:
+                                queued_score = random.uniform(0, self.url_prioritizer.max_score_threshold) if exploring else priority_score
+                                logger.debug(f"{'Exploring' if exploring else 'Queueing'}: {link} with priority {queued_score:.3f}")
+                                await self.queue.put((queued_score, (link, anchor_text)))
                                 self.queued.add(link)
                                 self.domain_queue_counts[link_domain] += 1
                                 if self.crawl_log:
-                                    self.crawl_log.log_discover(link, url, anchor_text, priority_score, self.domain_stats, score_components)
+                                    self.crawl_log.log_discover(link, url, anchor_text, queued_score, self.domain_stats, score_components, raw_features=raw_features, explore=exploring)
                             else:
                                 logger.debug(f"Filtered: {link} (score {priority_score:.3f} > threshold {self.url_prioritizer.max_score_threshold})")
                                 if self.crawl_log:
@@ -358,6 +369,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-log", action="store_true", help="Disable JSONL crawl event logging")
     parser.add_argument("--config", type=str, default=None, help="Path to crawl_config.json (default: data/crawl_config.json)")
     parser.add_argument("--domain-cap", type=int, default=50, help="Max URLs per domain allowed in queue at once (default: 50)")
+    parser.add_argument("--explore-fraction", type=float, default=0.0, help="Fraction of score-filtered URLs to explore randomly (default: 0.0)")
+    parser.add_argument("--model", type=str, default=None, help="Path to trained model pkl for URL scoring (default: hand-tuned sigmoid)")
     args = parser.parse_args()
 
     os.makedirs("logs", exist_ok=True)
@@ -382,6 +395,8 @@ if __name__ == "__main__":
         enable_logging=not args.no_log,
         crawl_config=crawl_config,
         domain_cap=args.domain_cap,
+        explore_fraction=args.explore_fraction,
+        model_path=args.model,
     )
     cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())

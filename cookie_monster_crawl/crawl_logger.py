@@ -48,6 +48,8 @@ class CrawlLogger:
         score: float,
         domain_counts: Dict[str, int],
         score_components: Optional[Dict[str, float]] = None,
+        raw_features: Optional[Dict] = None,
+        explore: bool = False,
     ):
         """Log when a new URL is discovered from a page."""
         self._write({
@@ -57,7 +59,9 @@ class CrawlLogger:
             "anchor_text": anchor_text,
             "score": round(score, 6),
             "score_components": score_components or {},
+            "raw_features": raw_features or {},
             "domain_counts_snapshot": dict(domain_counts) if domain_counts else {},
+            "explore": explore,
         })
 
     def log_visit(self, url: str, priority: float, pages_fetched: int):
