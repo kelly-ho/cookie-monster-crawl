@@ -37,11 +37,14 @@ FEATURE_NAMES = [
     "mid_infrastructure",
     "mid_nav",
     "mid_recipe",
+    "has_pagination_pattern",
+    "domain_harvest_rate",
     "has_date_in_path",
     "query_param_count",
     "slug_word_count_ratio",
     "has_numeric_id",
     "is_print_or_wprm",
+    "leaf_is_plural",
 ]
 
 MODEL_DIR = Path("models")

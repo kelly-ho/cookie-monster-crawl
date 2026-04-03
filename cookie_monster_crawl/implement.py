@@ -62,7 +62,7 @@ It can reference: url, parsed (urlparse result), segments, leaf, mid_path, leaf_
 For utils_extract_features, available locals are: url, domain, segments, root, stats, similar_junk, domain_share, leaf, mid_path, leaf_words, is_dead_branch, anchor_text.
 For utils_calculate_score, available locals are: url, domain, segments, root, stats, similar_junk, domain_share, m, c, components, anchor_text.
 
-Return only valid JSON. No markdown, no code blocks."""
+CRITICAL: Your entire response must be a single JSON object. No explanation, no markdown, no code blocks, no text before or after the JSON. If you cannot produce the edits, return {"error": "reason"}."""
 
 
 def load_strategy(filepath: str) -> dict:
@@ -164,14 +164,22 @@ def main():
     parser = argparse.ArgumentParser(description="Auto-implement feature proposals from a strategy")
     parser.add_argument("strategy_json", help="Path to strategy JSON with feature_proposals")
     parser.add_argument("--logfiles", nargs="+", required=True, help="Crawl log files for retraining")
+    parser.add_argument("--features", nargs="+", default=None, help="Only implement these features by name (default: all)")
     parser.add_argument("--dry-run", action="store_true", help="Show edits without applying")
     args = parser.parse_args()
 
     strategy = load_strategy(args.strategy_json)
     proposals = strategy.get("feature_proposals", [])
 
+    if args.features:
+        selected = set(args.features)
+        proposals = [p for p in proposals if p["name"] in selected]
+        missing = selected - {p["name"] for p in proposals}
+        if missing:
+            print(f"Warning: features not found in strategy: {', '.join(missing)}", file=sys.stderr)
+
     if not proposals:
-        print("No feature proposals found in strategy.")
+        print("No feature proposals to implement.")
         return
 
     print(f"Implementing {len(proposals)} feature proposals:")

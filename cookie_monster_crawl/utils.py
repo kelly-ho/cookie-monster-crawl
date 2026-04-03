@@ -221,11 +221,14 @@ class URLPrioritizer:
             "mid_infrastructure":     sum(1 for s in mid_path if s in self.infrastructure_segments),
             "mid_nav":                sum(1 for s in mid_path if s in self.navigational_segments),
             "mid_recipe":             sum(1 for s in mid_path if s in self.recipe_related_segments),
+            "has_pagination_pattern": int(any(segments[i] == 'page' and i + 1 < len(segments) and segments[i + 1].isdigit() for i in range(len(segments))) or bool(re.search(r'[?&](?:page|p|pg)=\d+', url))),
+            "domain_harvest_rate": round((lambda d_stats: sum(s[0] for s in d_stats.values()) / sum(s[1] for s in d_stats.values()) if sum(s[1] for s in d_stats.values()) > 0 else 0.5)(self.domain_path_stats[domain]), 6),
             "has_date_in_path": int(bool(re.search(r'/\d{4}/\d{2}/', url))),
             "query_param_count": len(urlparse(url).query.split('&')) if urlparse(url).query else 0,
             "slug_word_count_ratio": round(len(leaf_words) / max(len(segments), 1), 6),
             "has_numeric_id": int(bool(re.search(r'\b\d{4,}\b', '-'.join(segments[-2:])) if segments else False)),
             "is_print_or_wprm": int(any(s in ('print', 'wprm_print', 'recipe-print') for s in segments)),
+            "leaf_is_plural": int(leaf_words[-1].endswith('s') if leaf_words else False),
         }
 
     def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> tuple[float, dict, dict]:
@@ -276,11 +279,14 @@ class URLPrioritizer:
             "mid_infrastructure":     sum(1 for s in segments[:-1] if s in self.infrastructure_segments),
             "mid_nav":                sum(1 for s in segments[:-1] if s in self.navigational_segments),
             "mid_recipe":             sum(1 for s in segments[:-1] if s in self.recipe_related_segments),
+            "has_pagination_pattern": int(any(segments[i] == 'page' and i + 1 < len(segments) and segments[i + 1].isdigit() for i in range(len(segments))) or bool(re.search(r'[?&](?:page|p|pg)=\d+', url))),
+            "domain_harvest_rate": round((lambda d_stats: sum(s[0] for s in d_stats.values()) / sum(s[1] for s in d_stats.values()) if sum(s[1] for s in d_stats.values()) > 0 else 0.5)(self.domain_path_stats[domain]), 6),
             "has_date_in_path": int(bool(re.search(r'/\d{4}/\d{2}/', url))),
             "query_param_count": len(urlparse(url).query.split('&')) if urlparse(url).query else 0,
             "slug_word_count_ratio": round(len([w for w in (segments[-1] if segments else '').split('-') if w]) / max(len(segments), 1), 6),
             "has_numeric_id": int(bool(re.search(r'\b\d{4,}\b', '-'.join(segments[-2:])) if segments else False)),
             "is_print_or_wprm": int(any(s in ('print', 'wprm_print', 'recipe-print') for s in segments)),
+            "leaf_is_plural": int((segments[-1].split('-')[-1] if segments else '').endswith('s')),
         }
 
         if self.model is not None:
