@@ -107,6 +107,15 @@ class CrawlLogger:
             event["score"] = round(score, 6)
         self._write(event)
 
+    def log_nav_visit(self, url: str, priority: float, nav_pages_fetched: int):
+        """Log when a navigation URL is fetched (no recipe expectation)."""
+        self._write({
+            "type": "nav_visit",
+            "url": url,
+            "priority_at_fetch": round(priority, 6),
+            "nav_pages_fetched_so_far": nav_pages_fetched,
+        })
+
     def log_rescore(self, url: str, old_priority: float, new_priority: float):
         """Log when a URL is rescored and requeued."""
         self._write({
