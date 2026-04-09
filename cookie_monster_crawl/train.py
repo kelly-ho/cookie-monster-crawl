@@ -37,6 +37,8 @@ FEATURE_NAMES = [
     "mid_infrastructure",
     "mid_nav",
     "mid_recipe",
+    "is_roundup_slug",
+    "anchor_has_recipe_keyword",
     "has_pagination_pattern",
     "domain_harvest_rate",
     "has_date_in_path",
@@ -92,7 +94,7 @@ def next_model_path() -> Path:
 def train(X: np.ndarray, y: np.ndarray) -> Pipeline:
     model = Pipeline([
         ("scaler", StandardScaler()),
-        ("clf", LogisticRegression(max_iter=1000)),
+        ("clf", LogisticRegression(max_iter=1000, class_weight='balanced')),
     ])
     model.fit(X, y)
     return model

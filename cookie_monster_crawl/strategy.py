@@ -126,6 +126,7 @@ Your primary role is to propose **structural improvements** to the crawler — n
 3. **Seeds and segments**: Curate the seed list and segment keyword lists based on what the data shows. This is secondary to feature and policy proposals.
 
 Guidelines:
+- Review the previous strategy's proposals against the current model coefficients. If a feature was implemented but has a near-zero coefficient, it failed — do not propose similar features. Explain what you learned from proposals that didn't work.
 - Look at which features have zero or near-zero coefficients — they may need richer signal or may be poorly defined
 - Look at the gap between the strongest and weakest features — what information is the model missing?
 - Consider what signals a human would use to guess if a URL leads to a recipe page, then propose features that capture those signals
