@@ -64,7 +64,43 @@ def get_recipe_data(html: str, url: str) -> Optional[dict]:
         except (json.JSONDecodeError, TypeError):
             continue
     
+    # Fallback: try microdata (itemtype="...Recipe")
+    recipe = _extract_recipe_from_microdata(soup)
+    if recipe:
+        recipe["url"] = url
+        return recipe
+
     return None
+
+
+def _extract_recipe_from_microdata(soup: BeautifulSoup) -> Optional[dict]:
+    """Extract recipe data from HTML microdata (itemtype schema)."""
+    node = soup.find(attrs={"itemtype": lambda v: v and "Recipe" in v})
+    if not node:
+        return None
+
+    def _prop(name):
+        el = node.find(attrs={"itemprop": name})
+        return el.get_text(strip=True) if el else None
+
+    def _prop_list(name):
+        return [el.get_text(strip=True) for el in node.find_all(attrs={"itemprop": name})]
+
+    title = _prop("name")
+    if not title:
+        return None
+
+    ingredients = _prop_list("recipeIngredient") or _prop_list("ingredients")
+    instructions = _prop_list("recipeInstructions")
+
+    return {
+        "title": title,
+        "ingredients": ingredients,
+        "instructions": instructions,
+        "prep_time": _prop("prepTime"),
+        "cook_time": _prop("cookTime"),
+        "servings": _prop("recipeYield"),
+    }
 
 
 def _extract_recipe_from_data(data: any) -> Optional[dict]:

@@ -1,8 +1,8 @@
 """
-Train a logistic regression model on crawl log data.
+Train URL scoring models on crawl log data.
 
 Reads one or more JSONL crawl logs, extracts (features, label) pairs
-from visited URLs, and trains a logistic regression model.
+from visited URLs, and trains multiple model types for comparison.
 
 Raw features (config-independent) from discover events are used for training.
 Labels come from result events (is_recipe).
@@ -19,10 +19,12 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
 FEATURE_NAMES = [
     "domain_share",
@@ -34,14 +36,11 @@ FEATURE_NAMES = [
     "leaf_is_infrastructure",
     "leaf_is_navigational",
     "leaf_is_recipe_related",
-    "mid_infrastructure",
     "mid_nav",
     "mid_recipe",
     "is_roundup_slug",
     "anchor_has_recipe_keyword",
-    "has_pagination_pattern",
     "domain_harvest_rate",
-    "has_date_in_path",
     "query_param_count",
     "slug_word_count_ratio",
     "has_numeric_id",
@@ -50,6 +49,23 @@ FEATURE_NAMES = [
 ]
 
 MODEL_DIR = Path("models")
+
+MODELS = {
+    "logistic_regression": lambda: Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(max_iter=1000)),
+    ]),
+    "random_forest": lambda: Pipeline([
+        ("clf", RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42)),
+    ]),
+    "gradient_boosting": lambda: Pipeline([
+        ("clf", GradientBoostingClassifier(n_estimators=200, max_depth=5, learning_rate=0.1, random_state=42)),
+    ]),
+    "svm": lambda: Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", SVC(kernel="rbf", probability=True, random_state=42)),
+    ]),
+}
 
 
 def load_events(logfiles: list[str]) -> tuple[dict, dict]:
@@ -91,45 +107,70 @@ def next_model_path() -> Path:
     return MODEL_DIR / f"model_v{version}.pkl"
 
 
-def train(X: np.ndarray, y: np.ndarray) -> Pipeline:
-    model = Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", LogisticRegression(max_iter=1000, class_weight='balanced')),
-    ])
-    model.fit(X, y)
+def train_model(name: str, X_train: np.ndarray, y_train: np.ndarray) -> Pipeline:
+    model = MODELS[name]()
+    model.fit(X_train, y_train)
     return model
 
 
-def print_report(model: Pipeline, X_train, y_train, X_test, y_test, filepath: Path):
+def get_feature_importances(model: Pipeline, name: str) -> list[tuple[str, float]]:
+    """Extract feature importances/coefficients depending on model type."""
     clf = model.named_steps["clf"]
-    scaler = model.named_steps["scaler"]
 
-    n_recipes = int(y_train.sum()) + int(y_test.sum())
-    n_non = (len(y_train) + len(y_test)) - n_recipes
-    print(f"\nModel saved to: {filepath}")
-    print(f"Total samples: {len(y_train) + len(y_test)}  (recipes={n_recipes}, non-recipes={n_non})")
-    print(f"Train/test split: {len(y_train)}/{len(y_test)}")
+    if name == "logistic_regression":
+        scaler = model.named_steps["scaler"]
+        coefs = clf.coef_[0] / scaler.scale_
+        return sorted(zip(FEATURE_NAMES, coefs), key=lambda x: abs(x[1]), reverse=True)
+    elif name in ("random_forest", "gradient_boosting"):
+        importances = clf.feature_importances_
+        return sorted(zip(FEATURE_NAMES, importances), key=lambda x: x[1], reverse=True)
+    elif name == "svm":
+        # SVM with RBF kernel has no direct feature importances
+        return []
+    return []
 
-    if int(y_train.sum()) == 0 or int((~y_train.astype(bool)).sum()) == 0:
-        print("Warning: only one class in training data — coefficients not meaningful")
+
+def print_comparison(results: dict, X_test, y_test):
+    """Print a side-by-side comparison of all models."""
+    baseline = max(y_test.mean(), 1 - y_test.mean())
+
+    print(f"\n{'='*60}")
+    print(f"MODEL COMPARISON")
+    print(f"{'='*60}")
+    print(f"{'Model':<25s} {'Train':>8s} {'Test':>8s} {'vs Baseline':>12s}")
+    print(f"{'-'*25} {'-'*8} {'-'*8} {'-'*12}")
+
+    for name, (model, train_acc, test_acc) in sorted(results.items(), key=lambda x: -x[1][2]):
+        delta = test_acc - baseline
+        print(f"{name:<25s} {train_acc:>7.1%} {test_acc:>7.1%} {delta:>+11.1%}")
+
+    print(f"{'baseline (majority)':<25s} {'':>8s} {baseline:>7.1%}")
+    print(f"{'='*60}")
+
+
+def print_feature_report(model: Pipeline, name: str):
+    """Print feature importances for a single model."""
+    importances = get_feature_importances(model, name)
+    if not importances:
         return
 
-    coefs = clf.coef_[0] / scaler.scale_
-    print("\nFeature coefficients (positive = predicts recipe):")
-    for name, coef in sorted(zip(FEATURE_NAMES, coefs), key=lambda x: abs(x[1]), reverse=True):
-        print(f"  {name:25s} {coef:+.4f}")
-
-    train_acc = (model.predict(X_train) == y_train).mean()
-    test_acc = (model.predict(X_test) == y_test).mean()
-    baseline = max(y_test.mean(), 1 - y_test.mean())
-    print(f"\nTrain accuracy: {train_acc:.1%}   Test accuracy: {test_acc:.1%}   Baseline: {baseline:.1%}")
+    if name == "logistic_regression":
+        print(f"\nFeature coefficients (positive = predicts recipe):")
+        for feat, coef in importances:
+            print(f"  {feat:25s} {coef:+.4f}")
+    else:
+        print(f"\nFeature importances:")
+        for feat, imp in importances:
+            print(f"  {feat:25s} {imp:.4f}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train logistic regression on crawl log data")
+    parser = argparse.ArgumentParser(description="Train URL scoring models on crawl log data")
     parser.add_argument("logfiles", nargs="+", help="JSONL crawl log files")
     parser.add_argument("--output", default=None, help="Output model path (default: models/model_vN.pkl)")
     parser.add_argument("--test-size", type=float, default=0.2, help="Fraction of data for test set (default: 0.2)")
+    parser.add_argument("--model", choices=list(MODELS.keys()), default=None,
+                        help="Model type to save (default: best performing)")
     args = parser.parse_args()
 
     discovers, results = load_events(args.logfiles)
@@ -143,20 +184,44 @@ def main():
         X, y, test_size=args.test_size, random_state=42, stratify=y
     )
 
-    model = train(X_train, y_train)
+    n_recipes = int(y.sum())
+    n_non = len(y) - n_recipes
+    print(f"Total samples: {len(y)}  (recipes={n_recipes}, non-recipes={n_non})")
+    print(f"Train/test split: {len(y_train)}/{len(y_test)}")
+
+    # Train all models
+    all_results = {}
+    for name in MODELS:
+        model = train_model(name, X_train, y_train)
+        train_acc = (model.predict(X_train) == y_train).mean()
+        test_acc = (model.predict(X_test) == y_test).mean()
+        all_results[name] = (model, train_acc, test_acc)
+
+    print_comparison(all_results, X_test, y_test)
+
+    # Pick model to save
+    if args.model:
+        best_name = args.model
+    else:
+        best_name = max(all_results, key=lambda k: all_results[k][2])
+
+    best_model = all_results[best_name][0]
+    print(f"\nSaving best model: {best_name}")
+    print_feature_report(best_model, best_name)
 
     filepath = Path(args.output) if args.output else next_model_path()
     MODEL_DIR.mkdir(exist_ok=True)
     with open(filepath, "wb") as f:
         pickle.dump({
-            "model": model,
+            "model": best_model,
+            "model_type": best_name,
             "feature_names": FEATURE_NAMES,
             "trained_at": datetime.now().isoformat(),
             "logfiles": args.logfiles,
             "n_samples": len(y),
         }, f)
 
-    print_report(model, X_train, y_train, X_test, y_test, filepath)
+    print(f"Model saved to: {filepath}")
 
 
 if __name__ == "__main__":

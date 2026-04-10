@@ -51,7 +51,6 @@ class Crawler:
         domain_cap: int = 50,
         explore_fraction: float = 0.0,
         model_path: str = None,
-        max_nav_pages: int = 100,
     ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
@@ -60,7 +59,6 @@ class Crawler:
         self.max_pages = max_pages
         self.domain_cap = domain_cap
         self.explore_fraction = explore_fraction
-        self.max_nav_pages = max_nav_pages
         self.robots_checker = RobotsChecker(headers=HEADERS)
 
         scoring = (crawl_config or {}).get("scoring", {})
@@ -84,33 +82,12 @@ class Crawler:
         self.domain_queue_counts: Dict[str, int] = defaultdict(int)
 
         self.pages_fetched = 0
-        self.nav_pages_fetched = 0
         self.seed_file_name = None
         self.latencies: List[float] = []
         self.domain_stats: Dict[str, int] = defaultdict(int)
         self.crawl_start_time: Optional[float] = None
         self.crawl_end_time: Optional[float] = None
         self.crawl_log: Optional[CrawlLogger] = CrawlLogger() if enable_logging else None
-
-    def _is_nav_candidate(self, url: str) -> bool:
-        """Check if a URL looks like a navigation/category page worth crawling for links.
-
-        Matches if any path segment is a navigational keyword, OR if a mid-path
-        segment is recipe-related and the leaf is a short slug (1-2 words) —
-        catching patterns like /recipes/gluten-free, /recipes/vegan, etc.
-        """
-        from urllib.parse import urlparse
-        segments = [s for s in urlparse(url).path.lower().split('/') if s]
-        if not segments:
-            return False
-        if any(s in self.url_prioritizer.navigational_segments for s in segments):
-            return True
-        leaf_words = [w for w in segments[-1].split('-') if w]
-        mid_path = segments[:-1]
-        return (
-            len(leaf_words) <= 2
-            and any(s in self.url_prioritizer.recipe_related_segments for s in mid_path)
-        )
 
     def get_domain_cap(self, domain: str) -> int:
         """Return a tiered domain cap based on the domain's harvest rate."""
@@ -178,9 +155,7 @@ class Crawler:
                 continue
 
             try:
-                priority, payload = item
-                url, anchor_text = payload[0], payload[1]
-                is_nav = payload[2] if len(payload) > 2 else False
+                priority, (url, anchor_text) = item
                 if url is None:
                     return
 
@@ -193,66 +168,52 @@ class Crawler:
                 if url in self.visited:
                     continue
 
-                # Skip nav URLs if nav cap reached
-                if is_nav and self.nav_pages_fetched >= self.max_nav_pages:
-                    continue
-
                 if self.domain_locks[domain].locked():
-                    await self.queue.put((priority + self.url_prioritizer.lock_penalty, (url, anchor_text, is_nav)))
+                    await self.queue.put((priority + self.url_prioritizer.lock_penalty, (url, anchor_text)))
                     continue
 
-                if not is_seed and not is_nav:
+                if not is_seed:
                     new_priority, _, _ = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
                     if new_priority > (priority + self.url_prioritizer.rescore_sensitivity):
                         logger.info(f"Requeuing {url}: priority worsened from {priority:.3f} to {new_priority:.3f}")
                         if self.crawl_log:
                             self.crawl_log.log_rescore(url, priority, new_priority)
-                        await self.queue.put((new_priority, (url, anchor_text, is_nav)))
+                        await self.queue.put((new_priority, (url, anchor_text)))
                         continue
 
-                logger.info(f"Fetching{' (nav)' if is_nav else ''}: {url}")
+                logger.info(f"Fetching: {url}")
                 self.visited.add(url)
 
                 if not is_seed:
                     self.domain_queue_counts[domain] -= 1
-                    if is_nav:
-                        self.nav_pages_fetched += 1
-                        if self.crawl_log:
-                            self.crawl_log.log_nav_visit(url, priority, self.nav_pages_fetched)
-                    else:
-                        self.pages_fetched += 1
-                        if self.crawl_log:
-                            self.crawl_log.log_visit(url, priority, self.pages_fetched)
+                    self.pages_fetched += 1
+                    if self.crawl_log:
+                        self.crawl_log.log_visit(url, priority, self.pages_fetched)
 
                 html = await self.fetch(self.session, url)
                 if not html:
                     continue
 
+                recipe = get_recipe_data(html, url)
                 links = get_links(html, url)
-
-                if is_nav:
-                    # Nav pages: extract links but skip recipe extraction
-                    pass
+                if recipe:
+                    logger.info(f"Found recipe: {recipe['title']}")
+                    self.recipes.append(recipe)
+                    self.url_prioritizer.update_model(url, is_recipe=True)
                 else:
-                    recipe = get_recipe_data(html, url)
-                    if recipe:
-                        logger.info(f"Found recipe: {recipe['title']}")
-                        self.recipes.append(recipe)
-                        self.url_prioritizer.update_model(url, is_recipe=True)
-                    else:
-                        self.url_prioritizer.update_model(url, is_recipe=False)
+                    self.url_prioritizer.update_model(url, is_recipe=False)
 
-                    if self.crawl_log and not is_seed:
-                        self.crawl_log.log_result(
-                            url=url,
-                            is_recipe=bool(recipe),
-                            recipe_title=recipe["title"] if recipe else None,
-                            links_found=len(links),
-                            cumulative_recipes=len(self.recipes),
-                            cumulative_pages=self.pages_fetched,
-                        )
+                if self.crawl_log and not is_seed:
+                    self.crawl_log.log_result(
+                        url=url,
+                        is_recipe=bool(recipe),
+                        recipe_title=recipe["title"] if recipe else None,
+                        links_found=len(links),
+                        cumulative_recipes=len(self.recipes),
+                        cumulative_pages=self.pages_fetched,
+                    )
 
-                # Check if we've hit page limit (excluding seed and nav URLs)
+                # Check if we've hit page limit (excluding seed URLs)
                 if self.pages_fetched >= self.max_pages:
                     logger.info(f"Reached max_pages limit of {self.max_pages}")
                     self.stop_signal.set()
@@ -276,19 +237,11 @@ class Crawler:
                             if priority_score <= self.url_prioritizer.max_score_threshold or exploring:
                                 queued_score = random.uniform(0, self.url_prioritizer.max_score_threshold) if exploring else priority_score
                                 logger.debug(f"{'Exploring' if exploring else 'Queueing'}: {link} with priority {queued_score:.3f}")
-                                await self.queue.put((queued_score, (link, anchor_text, False)))
+                                await self.queue.put((queued_score, (link, anchor_text)))
                                 self.queued.add(link)
                                 self.domain_queue_counts[link_domain] += 1
                                 if self.crawl_log:
                                     self.crawl_log.log_discover(link, url, anchor_text, queued_score, self.domain_stats, score_components, raw_features=raw_features, explore=exploring)
-                            elif self.nav_pages_fetched < self.max_nav_pages and self._is_nav_candidate(link):
-                                # Score-filtered but has navigational segments — queue as nav fetch
-                                logger.debug(f"Queueing as nav: {link} (score {priority_score:.3f})")
-                                await self.queue.put((priority_score, (link, anchor_text, True)))
-                                self.queued.add(link)
-                                self.domain_queue_counts[link_domain] += 1
-                                if self.crawl_log:
-                                    self.crawl_log.log_discover(link, url, anchor_text, priority_score, self.domain_stats, score_components, raw_features=raw_features, explore=False)
                             else:
                                 logger.debug(f"Filtered: {link} (score {priority_score:.3f} > threshold {self.url_prioritizer.max_score_threshold})")
                                 if self.crawl_log:
@@ -306,7 +259,7 @@ class Crawler:
     async def crawl(self):
         self.crawl_start_time = time.time()
         for url in self.start_urls:
-            self.queue.put_nowait((-float('inf'), (url, "", False)))
+            self.queue.put_nowait((-float('inf'), (url, "")))
             self.queued.add(url)
             if self.crawl_log:
                 self.crawl_log.log_seed(url)
@@ -368,7 +321,6 @@ class Crawler:
         report = {
             "timestamp": timestamp,
             "total_fetched": total_fetched,
-            "nav_pages_fetched": self.nav_pages_fetched,
             "recipes_found": recipe_count,
             "harvest_efficiency_percent": round(harvest_efficiency, 2),
             "domain_breakdown": dict(self.domain_stats),
@@ -378,7 +330,6 @@ class Crawler:
             "blocked_domains": list(self.blocked_domains),
             "config": {
                 "max_pages": self.max_pages,
-                "max_nav_pages": self.max_nav_pages,
                 "concurrency": self.concurrency,
                 "delay_secs": self.delay_secs,
                 "timeout_secs": self.timeout_secs
@@ -393,7 +344,6 @@ class Crawler:
         logger.info(f"{'='*60}")
         logger.info(f"Report saved to: {report_file}")
         logger.info(f"Total pages fetched: {total_fetched}")
-        logger.info(f"Nav pages fetched: {self.nav_pages_fetched}")
         logger.info(f"Recipes found: {recipe_count}")
         logger.info(f"Harvest efficiency: {harvest_efficiency:.2f}%")
         logger.info(f"Average latency: {avg_latency:.3f}s")
@@ -434,7 +384,6 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None, help="Path to crawl_config.json (default: data/crawl_config.json)")
     parser.add_argument("--domain-cap", type=int, default=50, help="Max URLs per domain allowed in queue at once (default: 50)")
     parser.add_argument("--explore-fraction", type=float, default=0.0, help="Fraction of score-filtered URLs to explore randomly (default: 0.0)")
-    parser.add_argument("--max-nav-pages", type=int, default=100, help="Max navigation pages to crawl (don't count toward max-pages) (default: 100)")
     parser.add_argument("--model", type=str, default=None, help="Path to trained model pkl for URL scoring (default: hand-tuned sigmoid)")
     args = parser.parse_args()
 
@@ -462,7 +411,6 @@ if __name__ == "__main__":
         domain_cap=args.domain_cap,
         explore_fraction=args.explore_fraction,
         model_path=args.model,
-        max_nav_pages=args.max_nav_pages,
     )
     cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())
