@@ -82,7 +82,7 @@ The crawler uses a learned scoring model to prioritize URLs:
    - leaf_is_infrastructure, leaf_is_navigational, leaf_is_recipe_related: 1 if leaf segment matches keyword lists
    - mid_infrastructure, mid_nav, mid_recipe: counts of mid-path segments matching keyword lists
 
-2. **Learned model**: Logistic regression on these features predicts P(non-recipe). This probability is used as the priority score (lower = more likely recipe = crawled first). The model is retrained after each crawl run.
+2. **Learned model**: A trained classifier (random forest, gradient boosting, or logistic regression) on these features predicts P(non-recipe). This probability is used as the priority score (lower = more likely recipe = crawled first). The model is retrained after each crawl run.
 
 3. **Segment keyword lists** (infrastructure_segments.txt, navigational_segments.txt, recipe_related_segments.txt) control which URL path segments trigger the leaf_is_* and mid_* features."""
 
@@ -126,8 +126,8 @@ Your primary role is to propose **structural improvements** to the crawler — n
 3. **Seeds and segments**: Curate the seed list and segment keyword lists based on what the data shows. This is secondary to feature and policy proposals.
 
 Guidelines:
-- Review the previous strategy's proposals against the current model coefficients. If a feature was implemented but has a near-zero coefficient, it failed — do not propose similar features. Explain what you learned from proposals that didn't work.
-- Look at which features have zero or near-zero coefficients — they may need richer signal or may be poorly defined
+- Review the previous strategy's proposals against the current model importances. If a feature was implemented but has near-zero importance, it failed — do not propose similar features. Explain what you learned from proposals that didn't work.
+- Look at which features have zero or near-zero importance — they may need richer signal or may be poorly defined
 - Look at the gap between the strongest and weakest features — what information is the model missing?
 - Consider what signals a human would use to guess if a URL leads to a recipe page, then propose features that capture those signals
 - For policy proposals, think about what the crawler's architecture fundamentally can't do right now
@@ -140,21 +140,27 @@ Return only valid JSON matching the schema. No markdown, no code blocks, no expl
 # --- Helpers ---
 
 def load_model_info(model_path: str) -> dict | None:
-    """Load model metadata and coefficients for strategy context."""
+    """Load model metadata and feature importances for strategy context."""
     try:
         with open(model_path, "rb") as f:
             data = pickle.load(f)
         model = data["model"]
         feature_names = data["feature_names"]
+        model_type = data.get("model_type", "unknown")
         clf = model.named_steps["clf"]
-        scaler = model.named_steps["scaler"]
-        coefs = clf.coef_[0] / scaler.scale_
+
+        importances = {}
+        if hasattr(clf, "feature_importances_"):
+            importances = {name: round(float(imp), 4) for name, imp in zip(feature_names, clf.feature_importances_)}
+        elif hasattr(clf, "coef_"):
+            scaler = model.named_steps.get("scaler")
+            coefs = clf.coef_[0] / scaler.scale_ if scaler else clf.coef_[0]
+            importances = {name: round(float(coef), 4) for name, coef in zip(feature_names, coefs)}
+
         return {
+            "model_type": model_type,
             "feature_names": feature_names,
-            "coefficients": {
-                name: round(float(coef), 4)
-                for name, coef in zip(feature_names, coefs)
-            },
+            "feature_importances": importances,
             "trained_at": data.get("trained_at"),
             "n_samples": data.get("n_samples"),
             "logfiles": data.get("logfiles"),
@@ -235,10 +241,10 @@ def _model_section(model_info: dict | None) -> str:
     if not model_info:
         return ""
     return f"""
-## Current Model
+## Current Model ({model_info.get('model_type', 'unknown')})
 Trained on {model_info['n_samples']} samples.
-Feature coefficients (positive = predicts recipe, negative = predicts non-recipe):
-{json.dumps(model_info['coefficients'], indent=2)}
+Feature importances (higher = more influential):
+{json.dumps(model_info['feature_importances'], indent=2)}
 """
 
 

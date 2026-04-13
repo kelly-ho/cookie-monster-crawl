@@ -46,6 +46,10 @@ FEATURE_NAMES = [
     "has_numeric_id",
     "is_print_or_wprm",
     "leaf_is_plural",
+    "has_how_to_prefix",
+    "has_what_is_prefix",
+    "recipe_word_density",
+    "is_listing_page",
 ]
 
 MODEL_DIR = Path("models")
@@ -81,9 +85,11 @@ def load_events(logfiles: list[str]) -> tuple[dict, dict]:
                 if not url:
                     continue
                 if event["type"] == "discover" and event.get("raw_features"):
-                    discovers[url] = event["raw_features"]
+                    if url not in discovers:
+                        discovers[url] = event["raw_features"]
                 elif event["type"] == "result":
-                    results[url] = event["is_recipe"]
+                    if url not in results:
+                        results[url] = event["is_recipe"]
 
     return discovers, results
 
@@ -171,6 +177,8 @@ def main():
     parser.add_argument("--test-size", type=float, default=0.2, help="Fraction of data for test set (default: 0.2)")
     parser.add_argument("--model", choices=list(MODELS.keys()), default=None,
                         help="Model type to save (default: best performing)")
+    parser.add_argument("--balance", type=float, default=None,
+                        help="Target ratio of majority class (e.g. 0.6 for 60/40). Undersamples training set only.")
     args = parser.parse_args()
 
     discovers, results = load_events(args.logfiles)
@@ -188,6 +196,18 @@ def main():
     n_non = len(y) - n_recipes
     print(f"Total samples: {len(y)}  (recipes={n_recipes}, non-recipes={n_non})")
     print(f"Train/test split: {len(y_train)}/{len(y_test)}")
+
+    if args.balance:
+        minority_mask = y_train == 0
+        majority_mask = y_train == 1
+        n_minority = minority_mask.sum()
+        n_majority_target = int(n_minority * args.balance / (1 - args.balance))
+        rng = np.random.RandomState(42)
+        majority_idx = rng.choice(np.where(majority_mask)[0], size=n_majority_target, replace=False)
+        keep_idx = np.concatenate([np.where(minority_mask)[0], majority_idx])
+        rng.shuffle(keep_idx)
+        X_train, y_train = X_train[keep_idx], y_train[keep_idx]
+        print(f"Balanced training set: {len(y_train)}  (recipes={int(y_train.sum())}, non-recipes={len(y_train) - int(y_train.sum())})")
 
     # Train all models
     all_results = {}

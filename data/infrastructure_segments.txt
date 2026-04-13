@@ -31,6 +31,8 @@ glossary
 newsletters
 user
 print
+recipe-print
+wprm-print
 video
 404
 ads

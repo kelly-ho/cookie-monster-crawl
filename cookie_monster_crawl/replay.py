@@ -11,6 +11,7 @@ Usage:
 import argparse
 import json
 import math
+import pickle
 import random
 import sys
 from collections import defaultdict
@@ -18,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+
+import numpy as np
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +36,7 @@ class URLLifecycle:
     # From discover event
     discovered_score: Optional[float] = None
     score_components: Dict[str, float] = field(default_factory=dict)
+    raw_features: Dict[str, float] = field(default_factory=dict)
     source_url: Optional[str] = None
     anchor_text: Optional[str] = None
 
@@ -99,6 +103,7 @@ def reconstruct(events: List[dict]) -> Dict[str, URLLifecycle]:
         elif t == "discover":
             lc.discovered_score = e.get("score")
             lc.score_components = e.get("score_components", {})
+            lc.raw_features = e.get("raw_features", {})
             lc.source_url = e.get("source_url")
             lc.anchor_text = e.get("anchor_text")
 
@@ -123,6 +128,49 @@ def reconstruct(events: List[dict]) -> Dict[str, URLLifecycle]:
             })
 
     return lifecycles
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b: Re-score with a candidate model
+# ---------------------------------------------------------------------------
+
+def rescore_with_model(lifecycles: Dict[str, URLLifecycle], model_path: str):
+    """Replace discovered_score with predictions from a candidate model."""
+    with open(model_path, "rb") as f:
+        data = pickle.load(f)
+    model = data["model"]
+    feature_names = data["feature_names"]
+
+    for lc in lifecycles.values():
+        if not lc.raw_features:
+            continue
+        vec = np.array([[lc.raw_features.get(f, 0.0) for f in feature_names]])
+        lc.discovered_score = float(model.predict_proba(vec)[0][0])
+
+    return data.get("model_type", "unknown")
+
+
+def simulate_harvest(lifecycles: Dict[str, URLLifecycle], top_n: int) -> dict:
+    """Simulate priority queue: take top N URLs by lowest score, report harvest."""
+    candidates = [lc for lc in lifecycles.values() if lc.discovered_score is not None and lc.is_recipe is not None and not lc.is_seed]
+    ranked = sorted(candidates, key=lambda lc: lc.discovered_score)
+    selected = ranked[:top_n]
+
+    recipes = sum(1 for lc in selected if lc.is_recipe)
+    non_recipes = len(selected) - recipes
+
+    false_positives = [(lc.url, round(lc.discovered_score, 4)) for lc in selected if not lc.is_recipe]
+    missed = sum(1 for lc in ranked[top_n:] if lc.is_recipe)
+
+    return {
+        "top_n": len(selected),
+        "harvest_pct": round(recipes / len(selected) * 100, 1) if selected else 0,
+        "recipes": recipes,
+        "non_recipes": non_recipes,
+        "missed_recipes": missed,
+        "total_candidates": len(candidates),
+        "false_positives": false_positives,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +417,9 @@ def main():
         help="Fraction of total pages visited used as filter sample size (default: 0.1)",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible filter sampling")
+    parser.add_argument("--model", default=None, help="Path to model .pkl — re-scores URLs and simulates harvest")
+    parser.add_argument("--top-n", type=int, default=1000, help="Pages to simulate fetching when using --model (default: 1000)")
+    parser.add_argument("--show-misses", action="store_true", help="Print non-recipe URLs in simulated top N")
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -376,6 +427,28 @@ def main():
 
     events = load_events(args.logfile)
     lifecycles = reconstruct(events)
+
+    if args.model:
+        model_type = rescore_with_model(lifecycles, args.model)
+        result = simulate_harvest(lifecycles, args.top_n)
+
+        print(f"\n{'='*50}")
+        print(f"SIMULATED HARVEST — {model_type} ({Path(args.model).name})")
+        print(f"{'='*50}")
+        print(f"Candidates:         {result['total_candidates']}")
+        print(f"Simulated fetches:  {result['top_n']}")
+        print(f"Harvest efficiency: {result['harvest_pct']}%")
+        print(f"Recipes fetched:    {result['recipes']}")
+        print(f"Non-recipes:        {result['non_recipes']}")
+        print(f"Missed recipes:     {result['missed_recipes']}")
+        print(f"{'='*50}")
+
+        if args.show_misses and result["false_positives"]:
+            print(f"\nNon-recipe URLs in top {result['top_n']}:")
+            for url, score in result["false_positives"]:
+                print(f"  {score:.4f}  {url}")
+        return
+
     analysis = analyze(
         lifecycles,
         events,

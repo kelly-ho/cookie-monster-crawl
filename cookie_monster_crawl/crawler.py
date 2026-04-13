@@ -51,6 +51,8 @@ class Crawler:
         domain_cap: int = 50,
         explore_fraction: float = 0.0,
         model_path: str = None,
+        max_domain_share: float = 0.10,
+        discovery_budget: int = 3,
     ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
@@ -59,6 +61,8 @@ class Crawler:
         self.max_pages = max_pages
         self.domain_cap = domain_cap
         self.explore_fraction = explore_fraction
+        self.max_domain_visits = int(max_pages * max_domain_share)
+        self.discovery_budget = discovery_budget
         self.robots_checker = RobotsChecker(headers=HEADERS)
 
         scoring = (crawl_config or {}).get("scoring", {})
@@ -166,6 +170,11 @@ class Crawler:
                 is_seed = url in self.start_urls
 
                 if url in self.visited:
+                    continue
+
+                if not is_seed and self.domain_stats[domain] >= self.max_domain_visits:
+                    if self.crawl_log:
+                        self.crawl_log.log_filter(url, "domain_share_cap")
                     continue
 
                 if self.domain_locks[domain].locked():
@@ -384,6 +393,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None, help="Path to crawl_config.json (default: data/crawl_config.json)")
     parser.add_argument("--domain-cap", type=int, default=50, help="Max URLs per domain allowed in queue at once (default: 50)")
     parser.add_argument("--explore-fraction", type=float, default=0.0, help="Fraction of score-filtered URLs to explore randomly (default: 0.0)")
+    parser.add_argument("--max-domain-share", type=float, default=0.10, help="Max fraction of pages any single domain can use (default: 0.10)")
+    parser.add_argument("--discovery-budget", type=int, default=3, help="Pages per domain that bypass score threshold for exploration (default: 3)")
     parser.add_argument("--model", type=str, default=None, help="Path to trained model pkl for URL scoring (default: hand-tuned sigmoid)")
     args = parser.parse_args()
 
@@ -411,6 +422,8 @@ if __name__ == "__main__":
         domain_cap=args.domain_cap,
         explore_fraction=args.explore_fraction,
         model_path=args.model,
+        max_domain_share=args.max_domain_share,
+        discovery_budget=args.discovery_budget,
     )
     cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())

@@ -50,6 +50,8 @@ DEFAULT_SCORING = {
     },
 }
 
+ROUNDUP_WORDS = {'ideas', 'favorites', 'everyone', 'collection', 'roundup', 'list', 'best', 'guide', 'essential', 'ultimate', 'top'}
+
 def _load_segments_from_file(filename: str) -> Set[str]:
     """Load URL segments from a text file in the data folder."""
     data_dir = Path(__file__).parent.parent / "data"
@@ -105,11 +107,11 @@ class URLPrioritizer:
     def _get_path_info(self, url: str):
         """Helper to extract consistent segments and root."""
         parsed = urlparse(url)
-        path = parsed.path.lower()
+        path = parsed.path.lower().replace('_', '-')
         segments = [s for s in path.split('/') if s]
         root = segments[0] if segments else "root"
         return parsed.netloc, path, segments, root
-    
+
     def _get_minhash(self, url: str):
         """Creates a fingerprint based on URL path segments."""
         m = MinHash(num_perm=self.num_perm)
@@ -120,12 +122,12 @@ class URLPrioritizer:
             if not token: continue
             m.update(token.encode('utf8'))
         return m
-    
+
     def update_model(self, url: str, is_recipe: bool):
         """Penalize page that is crawled but contains no recipe schema."""
         domain, _, _, root = self._get_path_info(url)
         self.domain_path_stats[domain][root][1] += 1
-        if is_recipe: 
+        if is_recipe:
             self.domain_path_stats[domain][root][0] += 1
         else:
             m = self._get_minhash(url)
@@ -143,13 +145,9 @@ class URLPrioritizer:
         elif word_count >= 4:
             return a["four_plus_words"]
         return a["two_three_words"]
-    
+
     def _score_segments(self, segments: list) -> float:
-        """
-        Score URL based on segment-level analysis.
-        - Reward longer URL slug length for leaf segments
-        - Categorize mid-path segments for context (recipe related, infra, nav)
-        """
+        """Score URL based on segment-level analysis."""
         if not segments:
             return 0
 
@@ -168,7 +166,6 @@ class URLPrioritizer:
         elif leaf in self.navigational_segments:
             score += lf["navigational"]
         elif leaf_word_count == 1:
-            # Single word leaf is likely an index page
             if leaf in self.recipe_related_segments:
                 score += lf["recipe_single_word"]
             else:
@@ -189,7 +186,20 @@ class URLPrioritizer:
                 score += mid["recipe_related"]
 
         return score
-    
+
+    def _domain_harvest_rate(self, domain: str) -> float:
+        d_stats = self.domain_path_stats[domain]
+        total = sum(s[1] for s in d_stats.values())
+        if total == 0:
+            return 0.5
+        return sum(s[0] for s in d_stats.values()) / total
+
+    def _is_roundup_slug(self, leaf: str, leaf_words: list) -> bool:
+        has_roundup_word = bool(set(leaf_words) & ROUNDUP_WORDS)
+        has_plural = any(w.endswith('s') and len(w) > 3 for w in leaf_words)
+        has_roundup_pattern = bool(re.search(r'-recipes-for-|-ideas-for-|-everyone-will-', leaf))
+        return (has_roundup_word and has_plural) or has_roundup_pattern
+
     def extract_features(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> dict:
         """Extract raw, config-independent features for model training and inference."""
         if url.lower().endswith(FILE_EXTENSIONS):
@@ -205,13 +215,12 @@ class URLPrioritizer:
         leaf = segments[-1] if segments else ""
         mid_path = segments[:-1]
         leaf_words = [w for w in leaf.split('-') if w]
-
-        is_dead_branch = bool(stats and (stats[0] / stats[1]) < self.sc["components"]["dead_branch_threshold"])
+        c = self.sc["components"]
 
         return {
             "domain_share":           round(domain_share, 6),
             "lsh_count":              len(similar_junk),
-            "dead_branch":            int(is_dead_branch),
+            "dead_branch":            int(bool(stats and (stats[0] / stats[1]) < c["dead_branch_threshold"])),
             "anchor_word_count":      len(anchor_text.strip().split()) if anchor_text.strip() else 0,
             "path_depth":             len(segments),
             "leaf_word_count":        len(leaf_words),
@@ -221,27 +230,37 @@ class URLPrioritizer:
             "mid_infrastructure":     sum(1 for s in mid_path if s in self.infrastructure_segments),
             "mid_nav":                sum(1 for s in mid_path if s in self.navigational_segments),
             "mid_recipe":             sum(1 for s in mid_path if s in self.recipe_related_segments),
-            "is_roundup_slug": int(bool(set(leaf_words) & {'ideas', 'favorites', 'everyone', 'collection', 'roundup', 'list', 'best', 'guide', 'essential', 'ultimate', 'top'}) and any(w.endswith('s') and len(w) > 3 for w in leaf_words) or bool(re.search(r'-recipes-for-|-ideas-for-|-everyone-will-', leaf))),
+            "is_roundup_slug":        int(self._is_roundup_slug(leaf, leaf_words)),
             "anchor_has_recipe_keyword": int(any(w in ('recipe', 'recipes') for w in anchor_text.lower().split())),
             "has_pagination_pattern": int(any(segments[i] == 'page' and i + 1 < len(segments) and segments[i + 1].isdigit() for i in range(len(segments))) or bool(re.search(r'[?&](?:page|p|pg)=\d+', url))),
-            "domain_harvest_rate": round((lambda d_stats: sum(s[0] for s in d_stats.values()) / sum(s[1] for s in d_stats.values()) if sum(s[1] for s in d_stats.values()) > 0 else 0.5)(self.domain_path_stats[domain]), 6),
-            "has_date_in_path": int(bool(re.search(r'/\d{4}/\d{2}/', url))),
-            "query_param_count": len(urlparse(url).query.split('&')) if urlparse(url).query else 0,
-            "slug_word_count_ratio": round(len(leaf_words) / max(len(segments), 1), 6),
-            "has_numeric_id": int(bool(re.search(r'\b\d{4,}\b', '-'.join(segments[-2:])) if segments else False)),
-            "is_print_or_wprm": int(any(s in ('print', 'wprm_print', 'recipe-print') for s in segments)),
-            "leaf_is_plural": int(leaf_words[-1].endswith('s') if leaf_words else False),
+            "domain_harvest_rate":    round(self._domain_harvest_rate(domain), 6),
+            "has_date_in_path":       int(bool(re.search(r'/\d{4}/\d{2}/', url))),
+            "query_param_count":      len(urlparse(url).query.split('&')) if urlparse(url).query else 0,
+            "slug_word_count_ratio":  round(len(leaf_words) / max(len(segments), 1), 6),
+            "has_numeric_id":         int(bool(re.search(r'\b\d{4,}\b', '-'.join(segments[-2:])) if segments else False)),
+            "is_print_or_wprm":       int(any(s in ('print', 'wprm-print', 'recipe-print') for s in segments)),
+            "leaf_is_plural":         int(leaf_words[-1].endswith('s') if leaf_words else False),
+            "has_how_to_prefix":      int(leaf.startswith('how-to-') or any(s == 'how-to' for s in segments)),
+            "has_what_is_prefix":     int(leaf.startswith('what-is-') or leaf.startswith('what-are-')),
+            "recipe_word_density":    round(sum(1 for s in segments for w in s.split('-') if w in self.recipe_related_segments) / max(len(segments), 1), 6),
+            "is_listing_page":        int(any(s in self.navigational_segments for s in mid_path) and len(leaf_words) <= 2),
         }
 
     def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> tuple[float, dict, dict]:
         if url.lower().endswith(FILE_EXTENSIONS):
             return 0.99, {}, {}
 
+        raw_features = self.extract_features(url, domain_counts, anchor_text)
+
+        if self.model is not None:
+            feature_vector = [[raw_features.get(f, 0.0) for f in self.model_feature_names]]
+            model_score = float(self.model.predict_proba(feature_vector)[0][0])
+            return model_score, {}, raw_features
+
+        # Hand-tuned sigmoid fallback
         domain, _, segments, root = self._get_path_info(url)
         stats = self.domain_path_stats[domain].get(root)
-
-        m = self._get_minhash(url)
-        similar_junk = self.lsh.query(m)
+        similar_junk = self.lsh.query(self._get_minhash(url))
 
         total_domain = sum(domain_counts.values()) if domain_counts else 1
         domain_share = domain_counts.get(get_base_domain(url), 0) / total_domain if domain_counts else 0.0
@@ -267,37 +286,6 @@ class URLPrioritizer:
             "anchor_text": anchor_text or None,
             "lsh_matches": len(similar_junk),
         })
-
-        raw_features = {
-            "domain_share":           round(domain_share, 6),
-            "lsh_count":              len(similar_junk),
-            "dead_branch":            int(bool(stats and (stats[0] / stats[1]) < c["dead_branch_threshold"])),
-            "anchor_word_count":      len(anchor_text.strip().split()) if anchor_text.strip() else 0,
-            "path_depth":             len(segments),
-            "leaf_word_count":        len([w for w in (segments[-1] if segments else "").split('-') if w]),
-            "leaf_is_infrastructure": int(segments[-1] in self.infrastructure_segments if segments else False),
-            "leaf_is_navigational":   int(segments[-1] in self.navigational_segments if segments else False),
-            "leaf_is_recipe_related": int(segments[-1] in self.recipe_related_segments if segments else False),
-            "mid_infrastructure":     sum(1 for s in segments[:-1] if s in self.infrastructure_segments),
-            "mid_nav":                sum(1 for s in segments[:-1] if s in self.navigational_segments),
-            "mid_recipe":             sum(1 for s in segments[:-1] if s in self.recipe_related_segments),
-            "is_roundup_slug": int((lambda lw, lf: bool(set(lw) & {'ideas', 'favorites', 'everyone', 'collection', 'roundup', 'list', 'best', 'guide', 'essential', 'ultimate', 'top'}) and any(w.endswith('s') and len(w) > 3 for w in lw) or bool(re.search(r'-recipes-for-|-ideas-for-|-everyone-will-', lf)))([w for w in (segments[-1] if segments else '').split('-') if w], segments[-1] if segments else '')),
-            "anchor_has_recipe_keyword": int(any(w in ('recipe', 'recipes') for w in anchor_text.lower().split())),
-            "has_pagination_pattern": int(any(segments[i] == 'page' and i + 1 < len(segments) and segments[i + 1].isdigit() for i in range(len(segments))) or bool(re.search(r'[?&](?:page|p|pg)=\d+', url))),
-            "domain_harvest_rate": round((lambda d_stats: sum(s[0] for s in d_stats.values()) / sum(s[1] for s in d_stats.values()) if sum(s[1] for s in d_stats.values()) > 0 else 0.5)(self.domain_path_stats[domain]), 6),
-            "has_date_in_path": int(bool(re.search(r'/\d{4}/\d{2}/', url))),
-            "query_param_count": len(urlparse(url).query.split('&')) if urlparse(url).query else 0,
-            "slug_word_count_ratio": round(len([w for w in (segments[-1] if segments else '').split('-') if w]) / max(len(segments), 1), 6),
-            "has_numeric_id": int(bool(re.search(r'\b\d{4,}\b', '-'.join(segments[-2:])) if segments else False)),
-            "is_print_or_wprm": int(any(s in ('print', 'wprm_print', 'recipe-print') for s in segments)),
-            "leaf_is_plural": int((segments[-1].split('-')[-1] if segments else '').endswith('s')),
-        }
-
-        if self.model is not None:
-            feature_vector = [[raw_features.get(f, 0.0) for f in self.model_feature_names]]
-            # P(non-recipe): high = likely junk = deprioritized; low = likely recipe = high priority
-            model_score = float(self.model.predict_proba(feature_vector)[0][0])
-            return model_score, {}, raw_features
 
         return float(final), {k: round(v, 6) for k, v in components.items()}, raw_features
 
