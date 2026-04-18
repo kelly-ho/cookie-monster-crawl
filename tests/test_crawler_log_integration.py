@@ -96,7 +96,7 @@ class TestLogResult:
     @pytest.mark.asyncio
     async def test_links_found_count_reflects_get_links_output(self):
         crawler = make_crawler()
-        two_links = {LINK: "link one", "https://a.com/other": "link two"}
+        two_links = {LINK: {"anchor_text": "link one", "context": "main"}, "https://a.com/other": {"anchor_text": "link two", "context": "main"}}
 
         with patch.object(crawler, 'fetch', new_callable=AsyncMock, return_value=HTML), \
              patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
@@ -130,7 +130,7 @@ class TestLogDiscover:
              patch.object(crawler.url_prioritizer, 'calculate_score', calculate_score), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
-             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "a link"}):
+             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: {"anchor_text": "a link", "context": "main"}}):
             await run_worker(crawler, [(0.5, PAGE, "")])
 
         crawler.crawl_log.log_discover.assert_called_once()
@@ -149,7 +149,7 @@ class TestLogDiscover:
              patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
-             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "a link"}):
+             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: {"anchor_text": "a link", "context": "main"}}):
             await run_worker(crawler, [(0.5, PAGE, "")])
 
         crawler.crawl_log.log_discover.assert_not_called()
@@ -167,7 +167,7 @@ class TestLogFilter:
              patch.object(crawler.url_prioritizer, 'calculate_score', calculate_score), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=True), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
-             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "click"}):
+             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: {"anchor_text": "click", "context": "main"}}):
             await run_worker(crawler, [(0.5, PAGE, "")])
 
         crawler.crawl_log.log_filter.assert_called_once()
@@ -184,7 +184,7 @@ class TestLogFilter:
              patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=False), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
-             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "click"}):
+             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: {"anchor_text": "click", "context": "main"}}):
             await run_worker(crawler, [(0.5, PAGE, "")])
 
         crawler.crawl_log.log_filter.assert_called_once()
@@ -200,7 +200,7 @@ class TestLogFilter:
              patch.object(crawler.url_prioritizer, 'calculate_score', return_value=(0.5, {}, {})), \
              patch.object(crawler.robots_checker, 'is_allowed', new_callable=AsyncMock, return_value=False), \
              patch('cookie_monster_crawl.crawler.get_recipe_data', return_value=None), \
-             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: "click"}):
+             patch('cookie_monster_crawl.crawler.get_links', return_value={LINK: {"anchor_text": "click", "context": "main"}}):
             await run_worker(crawler, [(0.5, PAGE, "")])
 
         # log_filter(link, "robots_blocked") — no third positional arg

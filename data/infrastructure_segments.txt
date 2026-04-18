@@ -56,3 +56,8 @@ trackback
 unsubscribe
 widget
 wishlist
+buy
+disclosure
+tips
+gear
+books

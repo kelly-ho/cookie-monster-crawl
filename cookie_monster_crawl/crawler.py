@@ -86,6 +86,9 @@ class Crawler:
         self.domain_queue_counts: Dict[str, int] = defaultdict(int)
 
         self.pages_fetched = 0
+        self.fetch_attempts = 0
+        self._seeds_visited = 0
+        self._seed_rescore_done = False
         self.seed_file_name = None
         self.latencies: List[float] = []
         self.domain_stats: Dict[str, int] = defaultdict(int)
@@ -107,6 +110,32 @@ class Crawler:
         elif harvest_rate < 0.2:
             return self.domain_cap // 2
         return self.domain_cap
+
+    async def _batch_rescore_after_seeds(self):
+        """Re-score all queued URLs now that seed results provide real domain stats."""
+        items = []
+        while not self.queue.empty():
+            try:
+                item = self.queue.get_nowait()
+                items.append(item)
+                self.queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+
+        retained = 0
+        filtered = 0
+        for priority, (url, anchor_text) in items:
+            new_score, _, _ = self.url_prioritizer.calculate_score(url, self.domain_stats, anchor_text)
+            if new_score <= self.url_prioritizer.max_score_threshold:
+                await self.queue.put((new_score, (url, anchor_text)))
+                retained += 1
+            else:
+                self.domain_queue_counts[get_base_domain(url)] -= 1
+                filtered += 1
+                if self.crawl_log:
+                    self.crawl_log.log_filter(url, "post_seed_rescore", new_score)
+
+        logger.info(f"Post-seed rescore: {len(items)} URLs rescored, {retained} retained, {filtered} filtered")
 
     async def fetch(self, session: aiohttp.ClientSession, url: str, retry_count: int = 0, max_retries: int = 3) -> Optional[str]:
         '''Fetch HTML content from a URL asynchronously with domain-level locking and exponential backoff for retryable errors.'''
@@ -195,13 +224,20 @@ class Crawler:
 
                 if not is_seed:
                     self.domain_queue_counts[domain] -= 1
-                    self.pages_fetched += 1
-                    if self.crawl_log:
-                        self.crawl_log.log_visit(url, priority, self.pages_fetched)
+                    self.fetch_attempts += 1
+                    if self.fetch_attempts >= int(self.max_pages * 1.5):
+                        logger.info(f"Safety cap reached: {self.fetch_attempts} fetch attempts")
+                        self.stop_signal.set()
+                        break
 
                 html = await self.fetch(self.session, url)
                 if not html:
                     continue
+
+                if not is_seed:
+                    self.pages_fetched += 1
+                    if self.crawl_log:
+                        self.crawl_log.log_visit(url, priority, self.pages_fetched)
 
                 recipe = get_recipe_data(html, url)
                 links = get_links(html, url)
@@ -228,8 +264,17 @@ class Crawler:
                     self.stop_signal.set()
                     break
 
-                for link, anchor_text in links.items():
+                for link, link_info in links.items():
+                    anchor_text = link_info["anchor_text"]
+                    link_context = link_info["context"]
                     if link not in self.queued:
+                        # Hard-filter: footer links with infrastructure leaf segments
+                        if link_context == "footer":
+                            leaf = link.rstrip("/").split("/")[-1].lower().replace('_', '-')
+                            if leaf in self.url_prioritizer.infrastructure_segments:
+                                if self.crawl_log:
+                                    self.crawl_log.log_filter(link, "footer_infrastructure")
+                                continue
                         link_domain = get_base_domain(link)
                         effective_cap = self.get_domain_cap(link_domain)
                         if self.domain_queue_counts[link_domain] >= effective_cap:
@@ -259,6 +304,13 @@ class Crawler:
                             self.blocked_domains.add(link_domain)
                             if self.crawl_log:
                                 self.crawl_log.log_filter(link, "robots_blocked")
+
+                # Trigger batch rescore after all seeds have been visited
+                if is_seed:
+                    self._seeds_visited += 1
+                    if self._seeds_visited >= len(self.start_urls) and not self._seed_rescore_done:
+                        self._seed_rescore_done = True
+                        await self._batch_rescore_after_seeds()
             except Exception as e:
                 logger.error(f"Error processing {url}: {e}")
             finally:

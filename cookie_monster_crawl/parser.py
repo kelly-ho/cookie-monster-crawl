@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Optional, Dict
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlencode, parse_qs
 from bs4 import BeautifulSoup
 
 
@@ -11,11 +11,36 @@ def get_base_domain(url: str) -> str:
     return parsed.netloc
 
 
-def get_links(html: str, base_url: str) -> Dict[str, str]:
+_STRIP_PARAMS = frozenset({'auth', 'theme', 'ref', 'fbclid', 'gclid'})
+
+
+def _canonicalize_url(url: str) -> str:
+    """Strip tracking/auth query params to reduce duplicate URLs."""
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    filtered = {k: v for k, v in params.items() if k not in _STRIP_PARAMS and not k.startswith('utm_')}
+    clean_query = urlencode(filtered, doseq=True) if filtered else ""
+    return parsed._replace(query=clean_query, fragment="").geturl().rstrip("/")
+
+
+_NAV_FOOTER_TAGS = frozenset({'nav', 'footer', 'header'})
+
+
+def _get_link_context(element) -> str:
+    """Return the semantic container of a link element."""
+    for parent in element.parents:
+        if parent.name in _NAV_FOOTER_TAGS:
+            return parent.name
+    return "main"
+
+
+def get_links(html: str, base_url: str) -> Dict[str, dict]:
     """
     Extract all links from HTML and normalize them to absolute URLs.
     Only includes links from the same domain.
-    Returns dict mapping URL -> anchor text.
+    Returns dict mapping URL -> {"anchor_text": str, "context": str}.
     """
     soup = BeautifulSoup(html, "html.parser")
     links = {}
@@ -24,10 +49,11 @@ def get_links(html: str, base_url: str) -> Dict[str, str]:
         href = a["href"].strip()
         if not href or href.startswith(("#", "mailto:", "javascript:")):
             continue
-        final_url = urljoin(base_url, href).split("#")[0].rstrip("/")
+        final_url = _canonicalize_url(urljoin(base_url, href).split("#")[0].rstrip("/"))
         if get_base_domain(final_url) == base_domain:
             anchor_text = a.get_text(strip=True)
-            links[final_url] = anchor_text
+            context = _get_link_context(a)
+            links[final_url] = {"anchor_text": anchor_text, "context": context}
     return links
 
 def _try_load_json(raw_str: str) -> Optional[dict]:

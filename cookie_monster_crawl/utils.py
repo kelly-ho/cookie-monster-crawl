@@ -198,7 +198,8 @@ class URLPrioritizer:
         has_roundup_word = bool(set(leaf_words) & ROUNDUP_WORDS)
         has_plural = any(w.endswith('s') and len(w) > 3 for w in leaf_words)
         has_roundup_pattern = bool(re.search(r'-recipes-for-|-ideas-for-|-everyone-will-', leaf))
-        return (has_roundup_word and has_plural) or has_roundup_pattern
+        has_leading_number = bool(re.match(r'^\d+-', leaf))
+        return (has_roundup_word and has_plural) or has_roundup_pattern or (has_leading_number and has_plural)
 
     def extract_features(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> dict:
         """Extract raw, config-independent features for model training and inference."""
