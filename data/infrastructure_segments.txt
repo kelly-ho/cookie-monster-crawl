@@ -61,3 +61,6 @@ disclosure
 tips
 gear
 books
+book-tour
+community
+join

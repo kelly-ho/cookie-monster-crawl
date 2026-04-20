@@ -46,3 +46,9 @@ section
 topics
 trending
 favorites
+a-z
+cooking-method
+cuisine-type
+ingredients-a-z
+meal-type
+recipes-a-z

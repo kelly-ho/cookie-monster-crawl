@@ -36,6 +36,7 @@ FEATURE_NAMES = [
     "leaf_is_infrastructure",
     "leaf_is_navigational",
     "leaf_is_recipe_related",
+    "mid_infrastructure",
     "mid_nav",
     "mid_recipe",
     "is_roundup_slug",
@@ -50,6 +51,7 @@ FEATURE_NAMES = [
     "has_what_is_prefix",
     "recipe_word_density",
     "is_listing_page",
+    "path_has_comment_page",
 ]
 
 MODEL_DIR = Path("models")

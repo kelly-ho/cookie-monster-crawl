@@ -21,6 +21,7 @@ from pathlib import Path
 import subprocess
 
 from cookie_monster_crawl.investigation import TOOL_DESCRIPTIONS, execute as run_tools
+from cookie_monster_crawl.outcomes import load_outcomes, format_outcomes_for_prompt
 
 PROJECT_ROOT = Path(__file__).parent.parent
 MAX_FILTER_SAMPLES = 20
@@ -136,6 +137,92 @@ Guidelines:
 
 Return only valid JSON matching the schema. No markdown, no code blocks, no explanation outside the JSON."""
 
+# --- Phase 4: Critique ---
+
+CRITIQUE_SCHEMA = {
+    "overall_assessment": "<accept|revise|reject>",
+    "objections": [
+        {
+            "target": "<which proposal — e.g. 'feature:has_date_in_path' or 'segment:tips'>",
+            "severity": "<critical|major|minor>",
+            "claim": "<the specific claim being challenged>",
+            "evidence": "<concrete evidence — URLs, log data, numbers from replay>",
+            "suggestion": "<what should change>",
+        }
+    ],
+    "investigations": [
+        {
+            "id": "<unique_id>",
+            "question": "<what you want to verify about the proposal>",
+            "tool": "<tool_name>",
+            "args": {},
+        }
+    ],
+    "endorsements": ["<proposals that are well-supported and should be kept as-is>"],
+    "summary": "<2-3 sentence assessment>",
+}
+
+CRITIQUE_PROMPT = f"""You are a skeptical technical reviewer for a recipe web crawler called cookie-monster-crawl.
+
+{ARCHITECTURE_CONTEXT}
+
+## Your role
+
+You are NOT the strategy proposer. Your goal is to stress-test the Proposer's strategy by finding specific, concrete evidence that proposals would fail, underperform, or cause unintended side effects.
+
+You have a fundamentally different objective from the Proposer. The Proposer is rewarded for creativity and impact. You are rewarded for correctness and evidence. A good critique prevents wasted crawl cycles on ideas that sound plausible but don't work.
+
+## Rules
+
+1. **Evidence required**: Every objection must cite specific evidence — URL patterns from the crawl data, log query results, numbers from the replay analysis, or historical outcome data. An objection without evidence is speculation, and you must not raise it.
+
+2. **Be specific**: Do not say "this might not work." Say "I checked 5 URLs matching this pattern and 3 would be misclassified because..." or "The replay data shows this feature has a correlation of X with recipe status, which is too weak to be useful."
+
+3. **Use outcome history**: If similar proposals were tried before and had negligible or negative impact, this is strong evidence the current proposal needs more justification. Conversely, if similar approaches succeeded, endorse them.
+
+4. **Severity calibration**:
+   - critical: this would make the crawler worse than doing nothing
+   - major: this would not achieve its stated goal but wouldn't cause harm
+   - minor: this would work but could be improved
+
+5. **Endorse good ideas**: You are skeptical, not adversarial. If a proposal is well-supported by the data, say so explicitly in your endorsements.
+
+6. **Request investigations**: You may request up to 5 investigations to verify the Proposer's claims before finalizing your critique. Good investigations test specific assertions — if the Proposer claims a URL pattern only appears in recipe pages, query the log for counter-examples.
+
+## Available Tools
+
+{json.dumps(TOOL_DESCRIPTIONS, indent=2)}
+
+## Output Schema
+
+Return JSON matching this structure:
+{json.dumps(CRITIQUE_SCHEMA, indent=2)}
+
+CRITICAL: Your entire response must be a single JSON object. No explanation, no markdown, no code blocks."""
+
+# --- Phase 5: Revise ---
+
+REVISE_PROMPT = f"""You are a crawl strategy advisor for a recipe web crawler called cookie-monster-crawl.
+
+{ARCHITECTURE_CONTEXT}
+
+## Your role
+
+You produced a strategy proposal and a technical reviewer has examined it, raising specific objections backed by evidence. Your job is to produce a revised strategy that addresses each objection.
+
+## Rules
+
+1. **Respond to every objection**: For each objection the Critic raised:
+   - If the evidence is valid, modify your proposal and explain the change in your reasoning.
+   - If the evidence is invalid or misinterpreted, rebut it with specific counter-reasoning.
+   - Do NOT silently remove a challenged proposal. Either improve it or defend it.
+
+2. **Keep endorsed elements**: Proposals the Critic endorsed should remain in your revision unless you have a reason to change them.
+
+3. **Stay concrete**: Your revised proposals must be at least as specific as the originals. Do not weaken proposals into vague suggestions to avoid critique.
+
+Return only valid JSON matching the schema. No markdown, no code blocks, no explanation outside the JSON."""
+
 
 # --- Helpers ---
 
@@ -220,10 +307,26 @@ def call_claude(system_prompt: str, user_content: str) -> str:
 def parse_json_response(response: str) -> dict:
     """Extract and validate JSON from Claude's response."""
     text = response.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
-    return json.loads(text)
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Extract from markdown code block
+    import re
+    match = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1).strip())
+
+    # Find first { to last } as fallback
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        return json.loads(text[start:end + 1])
+
+    raise json.JSONDecodeError("No JSON found in response", text, 0)
 
 
 def save_strategy(strategy: dict, output_dir: str) -> str:
@@ -288,6 +391,180 @@ Analyze the replay data, model performance, and investigation findings, then pro
 - Return only valid JSON matching the schema above"""
 
 
+def build_critique_content(
+    proposal: dict,
+    condensed: dict,
+    model_info: dict | None,
+    findings: dict[str, str],
+    outcomes: list[dict],
+    critique_findings: dict[str, str] | None = None,
+) -> str:
+    outcomes_section = format_outcomes_for_prompt(outcomes)
+
+    findings_section = ""
+    if critique_findings:
+        findings_section = "\n## Your Investigation Findings\n\n"
+        for inv_id, result in critique_findings.items():
+            findings_section += f"### {inv_id}\n{result}\n\n"
+
+    original_findings_section = "## Proposer's Investigation Findings\n\n"
+    for inv_id, result in findings.items():
+        original_findings_section += f"### {inv_id}\n{result}\n\n"
+
+    meta = condensed.get("meta", {})
+    meta_section = f"""## Crawl Summary
+Pages visited: {meta.get('pages_visited', '?')}
+Recipes found: {meta.get('recipes_found', '?')}
+URLs filtered: {meta.get('urls_filtered', '?')}"""
+
+    return f"""## Output Schema
+{json.dumps(CRITIQUE_SCHEMA, indent=2)}
+
+{_model_section(model_info)}
+
+{meta_section}
+
+## Score Calibration
+{json.dumps(condensed.get('score_calibration', []), indent=2)}
+
+{outcomes_section}
+
+{original_findings_section}
+
+## Strategy Proposal to Review
+{json.dumps(proposal, indent=2)}
+
+{findings_section}
+## Instructions
+Review the Proposer's strategy. Find specific evidence that proposals would fail or underperform. Request investigations to verify claims you're uncertain about. Endorse proposals that are well-supported.
+Return only valid JSON matching the schema above."""
+
+
+def build_revise_content(
+    proposal: dict,
+    critique: dict,
+    condensed: dict,
+    model_info: dict | None,
+    findings: dict[str, str],
+    critique_findings: dict[str, str] | None = None,
+) -> str:
+    critique_section = f"## Critic's Assessment\n{json.dumps(critique, indent=2)}"
+
+    critique_findings_section = ""
+    if critique_findings:
+        critique_findings_section = "\n## Evidence Gathered by Critic\n\n"
+        for inv_id, result in critique_findings.items():
+            critique_findings_section += f"### {inv_id}\n{result}\n\n"
+
+    return f"""## Output Schema
+{json.dumps(STRATEGY_SCHEMA, indent=2)}
+
+{_model_section(model_info)}
+{_replay_section(condensed, None)}
+
+## Your Original Proposal
+{json.dumps(proposal, indent=2)}
+
+{critique_section}
+
+{critique_findings_section}
+## Instructions
+Address each objection from the Critic. Modify proposals where the evidence is valid, rebut where it is not. Keep endorsed elements. Produce a complete revised strategy.
+Return only valid JSON matching the schema above."""
+
+
+def run_debate(
+    proposal: dict,
+    condensed: dict,
+    previous: dict | None,
+    model_info: dict | None,
+    findings: dict[str, str],
+    logfile: str,
+    max_fetches: int,
+    rounds: int,
+) -> tuple[dict, list[dict]]:
+    """Run the Proposer-Critic debate. Returns (final_proposal, critique_log)."""
+    outcomes = load_outcomes()
+    critique_log = []
+
+    for round_num in range(rounds):
+        print(f"\nDebate round {round_num + 1}/{rounds}", file=sys.stderr)
+
+        # Phase 4: Initial critique (may include investigation requests)
+        print("  Critic: reviewing proposal...", file=sys.stderr)
+        critique_content = build_critique_content(proposal, condensed, model_info, findings, outcomes)
+        critique_response = call_claude(CRITIQUE_PROMPT, critique_content)
+
+        try:
+            critique = parse_json_response(critique_response)
+        except json.JSONDecodeError:
+            print("  Warning: could not parse critique, skipping debate round", file=sys.stderr)
+            break
+
+        # Phase 4b: Run critic's investigations if requested
+        critic_investigations = critique.get("investigations", [])
+        critique_findings = {}
+        if critic_investigations:
+            print(f"  Critic: running {len(critic_investigations)} investigations...", file=sys.stderr)
+            critique_findings = run_tools(
+                critic_investigations,
+                logfile=logfile,
+                project_root=PROJECT_ROOT,
+                max_fetches=max_fetches,
+            )
+            for inv_id, result in critique_findings.items():
+                preview = result[:80].replace("\n", " ")
+                print(f"    {inv_id}: {preview}...", file=sys.stderr)
+
+            # Re-critique with investigation findings
+            print("  Critic: finalizing critique with evidence...", file=sys.stderr)
+            critique_content = build_critique_content(
+                proposal, condensed, model_info, findings, outcomes, critique_findings
+            )
+            critique_response = call_claude(CRITIQUE_PROMPT, critique_content)
+            try:
+                critique = parse_json_response(critique_response)
+            except json.JSONDecodeError:
+                print("  Warning: could not parse final critique", file=sys.stderr)
+
+        # Log the critique
+        objections = critique.get("objections", [])
+        assessment = critique.get("overall_assessment", "unknown")
+        print(f"  Critic assessment: {assessment} ({len(objections)} objections)", file=sys.stderr)
+        for obj in objections:
+            print(f"    [{obj.get('severity', '?')}] {obj.get('target', '?')}: {obj.get('claim', '')[:80]}", file=sys.stderr)
+
+        critique_log.append({
+            "round": round_num + 1,
+            "assessment": assessment,
+            "objections": len(objections),
+            "endorsements": len(critique.get("endorsements", [])),
+            "summary": critique.get("summary", ""),
+        })
+
+        # Early exit if critic accepts
+        if assessment == "accept":
+            print("  Critic accepted the proposal.", file=sys.stderr)
+            break
+
+        # Phase 5: Proposer revises
+        print("  Proposer: revising based on critique...", file=sys.stderr)
+        revise_content = build_revise_content(
+            proposal, critique, condensed, model_info, findings, critique_findings
+        )
+        revise_response = call_claude(REVISE_PROMPT, revise_content)
+
+        try:
+            proposal = parse_json_response(revise_response)
+        except json.JSONDecodeError:
+            print("  Warning: could not parse revision, keeping previous proposal", file=sys.stderr)
+            break
+
+        print("  Revision complete.", file=sys.stderr)
+
+    return proposal, critique_log
+
+
 # --- Main ---
 
 def main():
@@ -298,6 +575,8 @@ def main():
     parser.add_argument("--output-dir", default="results", help="Directory to write strategy JSON")
     parser.add_argument("--skip-investigation", action="store_true", help="Skip investigation phase (single-call mode)")
     parser.add_argument("--max-fetches", type=int, default=5, help="Max URL fetches during investigation (default: 5)")
+    parser.add_argument("--rounds", type=int, default=1, help="Number of critique-revise debate rounds (default: 1)")
+    parser.add_argument("--no-critique", action="store_true", help="Skip the Critic debate phase")
     args = parser.parse_args()
 
     replay = load_json(args.replay_json)
@@ -364,10 +643,20 @@ def main():
         print(response, file=sys.stderr)
         sys.exit(1)
 
+    # Phase 4-5: Critique-Revise debate
+    critique_log = []
+    if not args.no_critique:
+        strategy, critique_log = run_debate(
+            strategy, condensed, previous, model_info, findings,
+            logfile=logfile, max_fetches=args.max_fetches, rounds=args.rounds,
+        )
+
     # Stamp metadata
     strategy["timestamp"] = datetime.now().isoformat()
     strategy["based_on_log"] = replay.get("meta", {}).get("logfile", args.replay_json)
     strategy["previous_strategy"] = args.previous_strategy
+    strategy["debate_rounds"] = len(critique_log)
+    strategy["critique_log"] = critique_log
 
     filepath = save_strategy(strategy, args.output_dir)
     print(f"\nStrategy saved to: {filepath}", file=sys.stderr)
