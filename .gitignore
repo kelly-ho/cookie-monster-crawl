@@ -209,6 +209,7 @@ __marimo__/
 # Local recipe output
 recipes.json
 replay_output.json
+data/domain_stats.json
 notes.md
 logs/
 crawl_logs/

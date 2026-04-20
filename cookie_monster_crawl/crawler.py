@@ -52,7 +52,7 @@ class Crawler:
         explore_fraction: float = 0.0,
         model_path: str = None,
         max_domain_share: float = 0.10,
-        discovery_budget: int = 3,
+        domain_stats_path: str = None,
     ):
         self.start_urls = start_urls if start_urls is not None else []
         self.concurrency = concurrency
@@ -62,7 +62,6 @@ class Crawler:
         self.domain_cap = domain_cap
         self.explore_fraction = explore_fraction
         self.max_domain_visits = int(max_pages * max_domain_share)
-        self.discovery_budget = discovery_budget
         self.robots_checker = RobotsChecker(headers=HEADERS)
 
         scoring = (crawl_config or {}).get("scoring", {})
@@ -74,6 +73,8 @@ class Crawler:
             max_score_threshold=max_score_threshold,
             model_path=model_path,
         )
+        if domain_stats_path:
+            self.url_prioritizer.load_domain_stats(domain_stats_path)
 
         self.queue = AsyncPriorityQueue()
         self.visited: Set[str] = set()
@@ -140,18 +141,19 @@ class Crawler:
     async def fetch(self, session: aiohttp.ClientSession, url: str, retry_count: int = 0, max_retries: int = 3) -> Optional[str]:
         '''Fetch HTML content from a URL asynchronously with domain-level locking and exponential backoff for retryable errors.'''
         domain = get_base_domain(url)
-        
+        should_retry = False
+
         async with self.domain_locks[domain]:
             if not await self.robots_checker.is_allowed(url):
                 logger.info(f"Blocked by robots.txt: {url}")
                 self.blocked_domains.add(domain)
                 return None
-            
+
             crawl_delay = await self.robots_checker.get_crawl_delay(domain)
             sleep_time = max(self.delay_secs, crawl_delay)
             if sleep_time > 0:
                 await asyncio.sleep(sleep_time)
-            
+
             start_time = time.time()
             try:
                 async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=self.timeout_secs)) as response:
@@ -162,16 +164,20 @@ class Crawler:
                         self.domain_stats[domain] += 1
                         return html
                     elif response.status in {429, 500, 502, 503, 504} and retry_count < max_retries:
-                        backoff_time = (2 ** retry_count) * 2
-                        logger.warning(f"Status {response.status} for {url}, retrying in {backoff_time}s (attempt {retry_count + 1}/{max_retries})")
-                        await asyncio.sleep(backoff_time)
+                        logger.warning(f"Status {response.status} for {url}, retrying (attempt {retry_count + 1}/{max_retries})")
+                        should_retry = True
+                    else:
+                        logger.debug(f"Non-retryable status {response.status} for {url}")
+                        return None
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.warning(f"Failed to fetch {url}: {e}")
                 return None
-        
-        if retry_count < max_retries:
+
+        if should_retry:
+            backoff_time = (2 ** retry_count) * 2
+            await asyncio.sleep(backoff_time)
             return await self.fetch(session, url, retry_count + 1, max_retries)
-        
+
         return None
             
     async def worker(self):
@@ -334,6 +340,7 @@ class Crawler:
             self.crawl_log.close()
         self.save_results()
         self.generate_report()
+        self.url_prioritizer.save_domain_stats("data/domain_stats.json")
 
     def save_results(self):
         output_file = "recipes.json"
@@ -446,8 +453,8 @@ if __name__ == "__main__":
     parser.add_argument("--domain-cap", type=int, default=50, help="Max URLs per domain allowed in queue at once (default: 50)")
     parser.add_argument("--explore-fraction", type=float, default=0.0, help="Fraction of score-filtered URLs to explore randomly (default: 0.0)")
     parser.add_argument("--max-domain-share", type=float, default=0.10, help="Max fraction of pages any single domain can use (default: 0.10)")
-    parser.add_argument("--discovery-budget", type=int, default=3, help="Pages per domain that bypass score threshold for exploration (default: 3)")
     parser.add_argument("--model", type=str, default=None, help="Path to trained model pkl for URL scoring (default: hand-tuned sigmoid)")
+    parser.add_argument("--domain-stats", type=str, default=None, help="Path to domain_stats.json from a previous crawl (default: none)")
     args = parser.parse_args()
 
     os.makedirs("logs", exist_ok=True)
@@ -475,7 +482,7 @@ if __name__ == "__main__":
         explore_fraction=args.explore_fraction,
         model_path=args.model,
         max_domain_share=args.max_domain_share,
-        discovery_budget=args.discovery_budget,
+        domain_stats_path=args.domain_stats,
     )
     cookie_monster.load_seeds(args.seeds)
     asyncio.run(cookie_monster.crawl())

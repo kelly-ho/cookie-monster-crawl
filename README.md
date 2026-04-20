@@ -1,35 +1,134 @@
 # Cookie Monster Crawl
 
-Looking for (cookie) recipes! 
+A self-improving recipe web crawler that uses a learned scoring model + strategy agent to automate the observe, analyze and adapt cycle.
 
-## Scope
-Start with a few curated recipe websites. Then expand to discovering recipes from a seed URL and following links. 
+The crawler discovers recipe pages across 50+ food websites with 95%+ accuracy. It logs every scoring decision and feeds its results into an autonomous pipeline. An agent analyzes performance, investigates problems using tools, proposes concrete improvements and retrains the model. Each cycle produces a better crawler without manual tuning.
 
-Defining a recipe page: 
-* To start, contains Recipe schema 
+## The Problem
 
-Relevant data
-* Title
-* Ingredients
-* Instructions
-* Source
-* Website name 
+Recipe websites often bury content behind layers of navigation such as category pages or author profiles. A naive crawler can waste its budget on pages that don't contain recipes. The challenge is deciding which links to follow to maximize the ratio of recipe pages found per page fetched without manual tuning for each site.
 
-Nice to have data: prep time, cook time, servings, nutrition label, pictures. 
+## The Loop
 
-## Asynchronous behavior
-* HTTP requests are concurrent
-* I/O that is not blocking
-* Domains are rate limited
-* Retries (potentially with exponential backoff)
+The project is built around a feedback cycle. Each component exists to close this loop: Crawl > Log > Replay > Strategy > Train > Crawl
 
-## Constraints
-* Respect robots.txt
-* Can be identified by User-Agent
+1. **Crawl** - An async crawler fetches pages from 52 seed sites, guided by a priority queue. Each discovered link is scored by a model before entering the queue. Pages that are most likely to contain recipes receive lower scores and are fetched first.
 
-## Web Crawling Optimization
-Adaptive focused crawling: learn which URL patterns and pages yield the highest quality score and prioritize them
+2. **Log** — Every decision is recorded to a JSONL event log. This includes URL discovery, scoring, fetching, recipe extraction, and filtering. Thus, each crawl is fully reproducible and can be analyzed offline.
 
-## Goals
-Goal #1: minimize harvest efficiency, defined as (valid recipes / total crawled) * 100.  
-Future Goal: maximize recipe density, defined as (total recipes on site /  total pages on site) * 100. 
+3. **Replay** — The replay system rebuilds the history of every page from the log. This includes discovery method, scores and recipe classification. It can simulate how a different model would have performed on the same data.
+
+4. **Strategy** — A strategy agent reviews the replay data and proposes improvements. It operates in three phases.
+   - **Analyze** — The agent reviews crawl performance and identifies problems (ex. "category pages are slipping through scoring"), then decides what to investigate further.
+   - **Investigate** — The agent gathers evidence by fetching live URLs, querying the crawl log and reading source code to answer its own questions.
+   - **Propose** — The agent produces a strategy document with specific changes like new scoring features and policy adjustments.
+   The output is machine-readable JSON that can be directly applied to the codebase and configuration.
+
+5. **Train** — A training pipeline builds labeled data from crawl logs and trains four model types (logistic regression, random forest, gradient boosting, SVM) for comparison. The best model is saved. Then the cycle repeats with the updated model and configuration.
+
+## How the Crawler Works
+
+- **URL scoring** — A trained model scores URLs using 23 features extracted from URL structure, anchor text, and crawl state. No page content is needed at scoring time.
+
+- **Async with domain isolation** — Built on aiohttp + asyncio. Per domain locks enforce rate limits while robots.txt compliance is checked before fetching.
+
+- **Adapts during crawl** — Tracks per domain harvest rates and uses MinHash LSH to detect structurally similar non recipe URLs. A batch rescore after seed pages are visited reprioritizes the entire queue with real domain statistics.
+
+- **Recipe extraction** — Parses JSON-LD and microdata Recipe schemas to extract structured data (ex. title, ingredients, instructions).
+
+- **Dynamic domain cap** — High yield domains get more queue slots while low yield domains get fewer. This balances exploitation of "good" sources with the exploration of new ones.
+
+## Results
+
+95.1% mean harvest efficiency across 5 runs of 1,000 pages each, crawling 52 seed sites. 95 out of every 100 pages the crawler chooses to fetch contain a valid recipe.
+
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Usage
+
+### Crawl
+
+```bash
+python -m cookie_monster_crawl.crawler --max-pages 1000 --model models/model_v22.pkl --seeds data/static-target.json
+```
+
+Options:
+- `--max-pages` — Page budget (default: 100)
+- `--model` — Path to trained model `.pkl` (omit for hand-tuned fallback)
+- `--seeds` — Seed URL list (default: `data/static-target.json`)
+- `--domain-stats` — Warm-start with domain stats from a previous crawl
+- `--domain-cap` — Max URLs per domain in queue (default: 50)
+- `--explore-fraction` — Random exploration rate for training data collection (default: 0.0)
+
+Output:
+- `recipes.json` — Extracted recipe data
+- `crawl_logs/crawl_*.jsonl` — Event log for replay analysis
+- `results/run_*.json` — Performance report
+
+### Replay & Analyze
+
+```bash
+python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl
+python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl --model models/model_v22.pkl --show-misses
+```
+
+### Train a Model
+
+```bash
+python -m cookie_monster_crawl.train crawl_logs/crawl_*.jsonl --model logistic_regression
+```
+
+### Strategy Generation
+
+```bash
+python -m cookie_monster_crawl.strategy replay_output.json --model models/model_v22.pkl
+```
+
+### Full Pipeline
+
+```bash
+python -m cookie_monster_crawl.pipeline --model models/model_v22.pkl --seeds data/static-target.json
+```
+
+Chains crawl, replay, strategy, apply, and train into a single run.
+
+## Project Structure
+
+```
+cookie_monster_crawl/
+├── crawler.py          # Async crawler with priority queue, domain locks, batch rescore
+├── parser.py           # Link extraction, URL canonicalization, JSON-LD + microdata parsing
+├── utils.py            # URLPrioritizer (ML + fallback scoring), RobotsChecker
+├── train.py            # Multi-model training pipeline
+├── replay.py           # Crawl log reconstruction and offline analysis
+├── strategy.py         # LLM driven strategy generation
+├── apply.py            # Apply strategy changes to seed/segment files
+├── investigation.py    # Tool framework for LLM investigations
+├── pipeline.py         # End-to-end pipeline orchestration
+├── crawl_logger.py     # JSONL event logger
+├── priority_queue.py   # Min-heap with random tie-breaking
+data/
+├── static-target.json              # 52 seed URLs
+├── infrastructure_segments.txt     # Non-recipe URL keywords
+├── navigational_segments.txt       # Index/listing URL keywords
+├── recipe_related_segments.txt     # Recipe content URL keywords
+└── crawl_config.json               # Scoring hyperparameters
+tests/
+├── test_parser.py
+├── test_url_prioritizer.py
+├── test_crawler.py
+├── test_crawl_logger.py
+└── test_crawler_log_integration.py
+```
+
+## Tests
+
+```bash
+python -m pytest tests/ -q
+```

@@ -1,3 +1,4 @@
+import json
 import logging
 import pickle
 from urllib.robotparser import RobotFileParser
@@ -103,6 +104,31 @@ class URLPrioritizer:
             self.model = data["model"]
             self.model_feature_names = data["feature_names"]
             logger.info(f"Loaded scoring model from {model_path}")
+
+    def save_domain_stats(self, filepath: str):
+        """Save domain harvest stats to JSON for use in future crawls."""
+        stats = {}
+        for domain, roots in self.domain_path_stats.items():
+            total = sum(s[1] for s in roots.values())
+            if total == 0:
+                continue
+            success = sum(s[0] for s in roots.values())
+            stats[domain] = {"success": success, "total": total, "harvest_rate": round(success / total, 4)}
+        with open(filepath, "w") as f:
+            json.dump(stats, f, indent=2)
+        logger.info(f"Saved domain stats for {len(stats)} domains to {filepath}")
+
+    def load_domain_stats(self, filepath: str):
+        """Load domain harvest stats from a previous crawl to warm-start scoring."""
+        try:
+            with open(filepath) as f:
+                stats = json.load(f)
+        except FileNotFoundError:
+            logger.info(f"No domain stats file found at {filepath}, starting cold")
+            return
+        for domain, data in stats.items():
+            self.domain_path_stats[domain]["_historical"] = [data["success"], data["total"]]
+        logger.info(f"Loaded domain stats for {len(stats)} domains from {filepath}")
 
     def _get_path_info(self, url: str):
         """Helper to extract consistent segments and root."""
@@ -233,9 +259,7 @@ class URLPrioritizer:
             "mid_recipe":             sum(1 for s in mid_path if s in self.recipe_related_segments),
             "is_roundup_slug":        int(self._is_roundup_slug(leaf, leaf_words)),
             "anchor_has_recipe_keyword": int(any(w in ('recipe', 'recipes') for w in anchor_text.lower().split())),
-            "has_pagination_pattern": int(any(segments[i] == 'page' and i + 1 < len(segments) and segments[i + 1].isdigit() for i in range(len(segments))) or bool(re.search(r'[?&](?:page|p|pg)=\d+', url))),
             "domain_harvest_rate":    round(self._domain_harvest_rate(domain), 6),
-            "has_date_in_path":       int(bool(re.search(r'/\d{4}/\d{2}/', url))),
             "query_param_count":      len(urlparse(url).query.split('&')) if urlparse(url).query else 0,
             "slug_word_count_ratio":  round(len(leaf_words) / max(len(segments), 1), 6),
             "has_numeric_id":         int(bool(re.search(r'\b\d{4,}\b', '-'.join(segments[-2:])) if segments else False)),
