@@ -52,6 +52,8 @@ FEATURE_NAMES = [
     "recipe_word_density",
     "is_listing_page",
     "path_has_comment_page",
+    "path_depth_times_nav",
+    "has_filter_query_params",
 ]
 
 MODEL_DIR = Path("models")

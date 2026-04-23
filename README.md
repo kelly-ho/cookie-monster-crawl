@@ -1,6 +1,6 @@
 # Cookie Monster Crawl
 
-A self-improving recipe web crawler that uses a learned scoring model + strategy agent to automate the observe, analyze and adapt cycle.
+A self improving recipe web crawler that uses a learned scoring model + strategy agent to automate the observe, analyze and adapt cycle.
 
 The crawler discovers recipe pages across 50+ food websites with 95%+ accuracy. It logs every scoring decision and feeds its results into an autonomous pipeline. An agent analyzes performance, investigates problems using tools, proposes concrete improvements and retrains the model. Each cycle produces a better crawler without manual tuning.
 
@@ -18,17 +18,19 @@ The project is built around a feedback cycle. Each component exists to close thi
 
 3. **Replay** — The replay system rebuilds the history of every page from the log. This includes discovery method, scores and recipe classification. It can simulate how a different model would have performed on the same data.
 
-4. **Strategy** — A strategy agent reviews the replay data and proposes improvements. It operates in three phases.
-   - **Analyze** — The agent reviews crawl performance and identifies problems (ex. "category pages are slipping through scoring"), then decides what to investigate further.
-   - **Investigate** — The agent gathers evidence by fetching live URLs, querying the crawl log and reading source code to answer its own questions.
-   - **Propose** — The agent produces a strategy document with specific changes like new scoring features and policy adjustments.
-   The output is machine-readable JSON that can be directly applied to the codebase and configuration.
+4. **Strategy** — A multi agent system reviews the replay data and proposes improvements. A Proposer and Critic agent debate each strategy through structured rounds.
+   - **Analyze** — The Proposer reviews crawl performance and identifies problems (ex. "category pages are slipping through scoring"), then decides what to investigate further.
+   - **Investigate** — The Proposer gathers evidence by fetching live URLs, querying the crawl log and reading source code to answer its own questions.
+   - **Propose** — The Proposer produces a strategy with specific changes like new scoring features and policy adjustments.
+   - **Critique** — A Critic agent stress tests the proposal. It runs its own investigations to find counter examples, checks proposals against outcome history from past cycles, and raises evidence backed objections.
+   - **Revise** — The Proposer addresses each objection, either modifying the proposal or rebutting with counter evidence.
+   The debate runs for configurable rounds. The output is machine readable JSON that can be directly applied to the codebase and configuration.
 
 5. **Train** — A training pipeline builds labeled data from crawl logs and trains four model types (logistic regression, random forest, gradient boosting, SVM) for comparison. The best model is saved. Then the cycle repeats with the updated model and configuration.
 
 ## How the Crawler Works
 
-- **URL scoring** — A trained model scores URLs using 23 features extracted from URL structure, anchor text, and crawl state. No page content is needed at scoring time.
+- **URL scoring** — A trained model scores URLs using 27 features extracted from URL structure, anchor text, and crawl state. No page content is needed at scoring time.
 
 - **Async with domain isolation** — Built on aiohttp + asyncio. Per domain locks enforce rate limits while robots.txt compliance is checked before fetching.
 
@@ -40,7 +42,7 @@ The project is built around a feedback cycle. Each component exists to close thi
 
 ## Results
 
-95.1% mean harvest efficiency across 5 runs of 1,000 pages each, crawling 52 seed sites. 95 out of every 100 pages the crawler chooses to fetch contain a valid recipe.
+95.5% mean harvest efficiency across 5 runs of 1,000 pages each, crawling 51 seed sites. 95 out of every 100 pages the crawler chooses to fetch contain a valid recipe.
 
 ## Setup
 
@@ -55,7 +57,7 @@ pip install -e ".[dev]"
 ### Crawl
 
 ```bash
-python -m cookie_monster_crawl.crawler --max-pages 1000 --model models/model_v22.pkl --seeds data/static-target.json
+python -m cookie_monster_crawl.crawler --max-pages 1000 --model models/model_v29.pkl --seeds data/static-target.json
 ```
 
 Options:
@@ -75,7 +77,7 @@ Output:
 
 ```bash
 python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl
-python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl --model models/model_v22.pkl --show-misses
+python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl --model models/model_v29.pkl --show-misses
 ```
 
 ### Train a Model
@@ -87,13 +89,13 @@ python -m cookie_monster_crawl.train crawl_logs/crawl_*.jsonl --model logistic_r
 ### Strategy Generation
 
 ```bash
-python -m cookie_monster_crawl.strategy replay_output.json --model models/model_v22.pkl
+python -m cookie_monster_crawl.strategy replay_output.json --model models/model_v29.pkl
 ```
 
 ### Full Pipeline
 
 ```bash
-python -m cookie_monster_crawl.pipeline --model models/model_v22.pkl --seeds data/static-target.json
+python -m cookie_monster_crawl.pipeline --model models/model_v29.pkl --seeds data/static-target.json
 ```
 
 Chains crawl, replay, strategy, apply, and train into a single run.
@@ -107,9 +109,10 @@ cookie_monster_crawl/
 ├── utils.py            # URLPrioritizer (ML + fallback scoring), RobotsChecker
 ├── train.py            # Multi-model training pipeline
 ├── replay.py           # Crawl log reconstruction and offline analysis
-├── strategy.py         # LLM driven strategy generation
+├── strategy.py         # Multi-agent strategy: Propose → Critique → Revise
+├── outcomes.py         # Strategy outcome tracking for Critic history
 ├── apply.py            # Apply strategy changes to seed/segment files
-├── investigation.py    # Tool framework for LLM investigations
+├── investigation.py    # Tool framework for agent investigations
 ├── pipeline.py         # End-to-end pipeline orchestration
 ├── crawl_logger.py     # JSONL event logger
 ├── priority_queue.py   # Min-heap with random tie-breaking

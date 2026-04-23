@@ -270,6 +270,8 @@ class URLPrioritizer:
             "recipe_word_density":    round(sum(1 for s in segments for w in s.split('-') if w in self.recipe_related_segments) / max(len(segments), 1), 6),
             "is_listing_page":        int(any(s in self.navigational_segments for s in mid_path) and len(leaf_words) <= 2),
             "path_has_comment_page":  int(bool(re.search(r'comment-page-\d+', url))),
+            "path_depth_times_nav":   len(segments) * sum(1 for s in mid_path if s in self.navigational_segments),
+            "has_filter_query_params": int(bool(re.search(r'[?&](fwp_|_recipe_|filter|diet|cuisine|course|meal)', urlparse(url).query or ''))),
         }
 
     def calculate_score(self, url: str, domain_counts: Dict[str, int] = None, anchor_text: str = "") -> tuple[float, dict, dict]:
