@@ -41,6 +41,14 @@ STRATEGY_SCHEMA = {
     "policy_proposals": [
         "<description of a new crawling strategy, architectural change, or approach to try>"
     ],
+    "config_proposals": [
+        {
+            "parameter": "<parameter name from crawl_config.json>",
+            "current_value": "<current value>",
+            "proposed_value": "<proposed value>",
+            "rationale": "<why this change would improve harvest rate, with evidence>",
+        }
+    ],
     "seeds": {
         "keep": ["<homepage URL>"],
         "remove": ["<homepage URL>"],
@@ -118,20 +126,27 @@ PROPOSE_PROMPT = f"""You are a crawl strategy advisor for a recipe web crawler c
 
 ## Your job
 
-Your primary role is to propose **structural improvements** to the crawler — not to tune numbers. Specifically:
+Propose improvements to the crawler across four categories:
 
-1. **Feature proposals** (most important): Propose new raw features that would help the model distinguish recipe URLs from non-recipe URLs. Good features are computable from URL structure, anchor text, or crawl state without fetching the page. Each proposal should include a name, what it captures, and how to compute it.
+1. **Feature proposals**: Propose new raw features that would help the model distinguish recipe URLs from non-recipe URLs. Good features are computable from URL structure, anchor text, or crawl state without fetching the page. Each proposal should include a name, what it captures, and how to compute it.
 
-2. **Policy proposals**: Propose new crawling strategies or architectural changes. Examples: new deduplication approaches, multi-phase crawling, link graph analysis, domain-specific handling. Think beyond parameter tuning.
+2. **Config proposals**: Propose changes to crawl hyperparameters in crawl_config.json. Current values are shown in the config section below. Key tunable parameters:
+   - `max_score_threshold`: URLs scoring above this are filtered. Higher = more permissive, lower = more aggressive filtering.
+   - `lsh_threshold`: MinHash LSH similarity threshold for detecting near-duplicate junk URLs. Lower = catches more similar URLs, higher = requires closer matches.
+   - `rescore_sensitivity`: How aggressively the batch rescore after seed pages shifts scores based on real domain statistics.
+   - `lock_penalty`: Score penalty added when a domain's lock is held (another URL from that domain is being fetched).
+   Each config proposal must include the current value, proposed value, and evidence-based rationale.
 
-3. **Seeds and segments**: Curate the seed list and segment keyword lists based on what the data shows. This is secondary to feature and policy proposals.
+3. **Policy proposals**: Propose new crawling strategies or architectural changes. Examples: new deduplication approaches, multi-phase crawling, link graph analysis, domain-specific handling.
+
+4. **Seeds and segments**: Curate the seed list and segment keyword lists based on what the data shows.
 
 Guidelines:
 - Review the previous strategy's proposals against the current model importances. If a feature was implemented but has near-zero importance, it failed — do not propose similar features. Explain what you learned from proposals that didn't work.
 - Look at which features have zero or near-zero importance — they may need richer signal or may be poorly defined
 - Look at the gap between the strongest and weakest features — what information is the model missing?
 - Consider what signals a human would use to guess if a URL leads to a recipe page, then propose features that capture those signals
-- For policy proposals, think about what the crawler's architecture fundamentally can't do right now
+- For config proposals, use evidence from the crawl data (e.g. filter rates, domain harvest distributions, LSH match counts) to justify changes
 - Be specific and concrete in proposals — not "improve scoring" but "add has_date_in_path feature because recipe blogs use /YYYY/MM/slug patterns"
 - Use the investigation findings to inform your proposals — they contain evidence you requested
 
@@ -351,6 +366,20 @@ Feature importances (higher = more influential):
 """
 
 
+def _config_section() -> str:
+    config_path = PROJECT_ROOT / "data" / "crawl_config.json"
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+        scoring = config.get("scoring", {})
+        return f"""
+## Current Config (data/crawl_config.json)
+{json.dumps(scoring, indent=2)}
+"""
+    except FileNotFoundError:
+        return ""
+
+
 def _replay_section(replay: dict, previous_strategy: dict | None) -> str:
     previous_str = json.dumps(previous_strategy, indent=2) if previous_strategy else "null — this is the first run"
     return f"""## Previous Strategy
@@ -378,12 +407,14 @@ def build_propose_content(replay: dict, previous_strategy: dict | None, model_in
 {json.dumps(STRATEGY_SCHEMA, indent=2)}
 
 {_model_section(model_info)}
+{_config_section()}
 {_replay_section(replay, previous_strategy)}
 
 {findings_section}
 ## Instructions
 Analyze the replay data, model performance, and investigation findings, then produce a strategy.
 - Propose at least 2-3 new features that would improve the model
+- Propose config parameter changes if the data suggests current values are suboptimal
 - Propose at least 1 architectural or policy change
 - Curate seeds and segments based on what the data shows
 - Use investigation findings as evidence — they were gathered to answer your questions
@@ -421,6 +452,7 @@ URLs filtered: {meta.get('urls_filtered', '?')}"""
 {json.dumps(CRITIQUE_SCHEMA, indent=2)}
 
 {_model_section(model_info)}
+{_config_section()}
 
 {meta_section}
 
@@ -436,7 +468,7 @@ URLs filtered: {meta.get('urls_filtered', '?')}"""
 
 {findings_section}
 ## Instructions
-Review the Proposer's strategy. Find specific evidence that proposals would fail or underperform. Request investigations to verify claims you're uncertain about. Endorse proposals that are well-supported.
+Review the Proposer's strategy. Find specific evidence that proposals would fail or underperform. Request investigations to verify claims you're uncertain about. Endorse proposals that are well-supported. For config proposals, verify that the evidence supports the proposed direction and magnitude of change.
 Return only valid JSON matching the schema above."""
 
 

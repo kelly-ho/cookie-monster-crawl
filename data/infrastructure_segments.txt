@@ -64,3 +64,9 @@ books
 book-tour
 community
 join
+auth
+csrf
+faq
+my-stuff
+uploads
+wp-admin

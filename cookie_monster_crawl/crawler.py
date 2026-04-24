@@ -8,8 +8,9 @@ import time
 from datetime import datetime
 from typing import Optional, List, Set, Dict
 from collections import defaultdict
+from urllib.parse import urlparse
 from cookie_monster_crawl.parser import get_links, get_recipe_data, get_base_domain
-from cookie_monster_crawl.utils import RobotsChecker, URLPrioritizer, DEFAULT_SCORING
+from cookie_monster_crawl.utils import RobotsChecker, URLPrioritizer, DEFAULT_SCORING, FILE_EXTENSIONS
 from cookie_monster_crawl.priority_queue import AsyncPriorityQueue
 from cookie_monster_crawl.crawl_logger import CrawlLogger
 import argparse
@@ -96,6 +97,18 @@ class Crawler:
         self.crawl_start_time: Optional[float] = None
         self.crawl_end_time: Optional[float] = None
         self.crawl_log: Optional[CrawlLogger] = CrawlLogger() if enable_logging else None
+
+        # Seed prefix restriction: for seeds with a subpath, only enqueue URLs under that prefix
+        self.seed_prefix_map: Dict[str, str] = {}  # domain -> required path prefix
+
+    def _build_seed_prefix_map(self):
+        """Build prefix restrictions from seed URLs that have subpaths."""
+        for url in self.start_urls:
+            parsed = urlparse(url)
+            path = parsed.path.rstrip("/")
+            if path and path != "/":
+                domain = get_base_domain(url)
+                self.seed_prefix_map[domain] = path
 
     def get_domain_cap(self, domain: str) -> int:
         """Return a tiered domain cap based on the domain's harvest rate."""
@@ -274,6 +287,20 @@ class Crawler:
                     anchor_text = link_info["anchor_text"]
                     link_context = link_info["context"]
                     if link not in self.queued:
+                        # Pre-filter: media/binary URLs
+                        if link.lower().endswith(FILE_EXTENSIONS) or '/wp-content/uploads/' in link:
+                            if self.crawl_log:
+                                self.crawl_log.log_filter(link, "media_url")
+                            continue
+                        # Seed prefix restriction: only allow URLs under the seed's subpath
+                        link_domain = get_base_domain(link)
+                        if link_domain in self.seed_prefix_map:
+                            required_prefix = self.seed_prefix_map[link_domain]
+                            link_path = urlparse(link).path
+                            if not link_path.startswith(required_prefix):
+                                if self.crawl_log:
+                                    self.crawl_log.log_filter(link, "seed_prefix")
+                                continue
                         # Hard-filter: footer links with infrastructure leaf segments
                         if link_context == "footer":
                             leaf = link.rstrip("/").split("/")[-1].lower().replace('_', '-')
@@ -281,7 +308,6 @@ class Crawler:
                                 if self.crawl_log:
                                     self.crawl_log.log_filter(link, "footer_infrastructure")
                                 continue
-                        link_domain = get_base_domain(link)
                         effective_cap = self.get_domain_cap(link_domain)
                         if self.domain_queue_counts[link_domain] >= effective_cap:
                             if self.crawl_log:
@@ -432,7 +458,10 @@ class Crawler:
             with open(filepath, "r") as f:
                 data = json.load(f)
                 self.start_urls = data.get("seeds", [])
+                self._build_seed_prefix_map()
                 logger.info(f"Loaded {len(self.start_urls)} seed URLs from {filepath}")
+                if self.seed_prefix_map:
+                    logger.info(f"Seed prefix restrictions: {self.seed_prefix_map}")
         except FileNotFoundError:
             logger.error(f"Error: {filepath} not found.")
             return []

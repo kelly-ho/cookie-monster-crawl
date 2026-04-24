@@ -1,32 +1,32 @@
 # Cookie Monster Crawl
 
-A self improving recipe web crawler that uses a learned scoring model + strategy agent to automate the observe, analyze and adapt cycle.
+A self improving recipe web crawler. Uses a learned scoring model and multi agent debate to get better after every crawl.
 
-The crawler discovers recipe pages across 50+ food websites with 95%+ accuracy. It logs every scoring decision and feeds its results into an autonomous pipeline. An agent analyzes performance, investigates problems using tools, proposes concrete improvements and retrains the model. Each cycle produces a better crawler without manual tuning.
+The crawler discovers recipe pages across 50+ food websites with 96%+ accuracy. It logs every scoring decision so each run can be replayed offline. A Proposer agent analyzes the replay, investigates problems, and drafts a strategy. A Critic agent stress-tests it with evidence. The revised strategy is applied and the model is retrained.
 
 ## The Problem
 
-Recipe websites often bury content behind layers of navigation such as category pages or author profiles. A naive crawler can waste its budget on pages that don't contain recipes. The challenge is deciding which links to follow to maximize the ratio of recipe pages found per page fetched without manual tuning for each site.
+Recipe websites bury content behind category pages, author profiles, and editorial sections. A crawler that follows links blindly wastes its budget on pages that don't contain recipes. The challenge is deciding which links to follow to maximize the ratio of recipe pages found per page fetched.
 
 ## The Loop
 
-The project is built around a feedback cycle. Each component exists to close this loop: Crawl > Log > Replay > Strategy > Train > Crawl
+Crawl > Log > Replay > Strategy > Train > Crawl
 
 1. **Crawl** - An async crawler fetches pages from 52 seed sites, guided by a priority queue. Each discovered link is scored by a model before entering the queue. Pages that are most likely to contain recipes receive lower scores and are fetched first.
 
-2. **Log** — Every decision is recorded to a JSONL event log. This includes URL discovery, scoring, fetching, recipe extraction, and filtering. Thus, each crawl is fully reproducible and can be analyzed offline.
+2. **Log** — Every decision is recorded to a JSONL event log: URL discovery, scoring, fetching, recipe extraction, and filtering. Any crawl can be replayed and analyzed offline.
 
-3. **Replay** — The replay system rebuilds the history of every page from the log. This includes discovery method, scores and recipe classification. It can simulate how a different model would have performed on the same data.
+3. **Replay** — The replay system reconstructs every page's lifecycle from the log and can simulate how a different model would have scored the same URLs.
 
 4. **Strategy** — A multi agent system reviews the replay data and proposes improvements. A Proposer and Critic agent debate each strategy through structured rounds.
-   - **Analyze** — The Proposer reviews crawl performance and identifies problems (ex. "category pages are slipping through scoring"), then decides what to investigate further.
+   - **Analyze** — The Proposer reviews crawl performance and identifies problems (ex. "the crawler doesn't filter author bios"), then decides what to investigate further.
    - **Investigate** — The Proposer gathers evidence by fetching live URLs, querying the crawl log and reading source code to answer its own questions.
    - **Propose** — The Proposer produces a strategy with specific changes like new scoring features and policy adjustments.
-   - **Critique** — A Critic agent stress tests the proposal. It runs its own investigations to find counter examples, checks proposals against outcome history from past cycles, and raises evidence backed objections.
+   - **Critique** — A Critic agent stress tests the proposal. It runs its own investigations to find counter examples, checks proposals against history from past cycles, and raises evidence backed objections.
    - **Revise** — The Proposer addresses each objection, either modifying the proposal or rebutting with counter evidence.
-   The debate runs for configurable rounds. The output is machine readable JSON that can be directly applied to the codebase and configuration.
+   The debate runs for configurable rounds and outputs machine readable JSON that can be applied directly.
 
-5. **Train** — A training pipeline builds labeled data from crawl logs and trains four model types (logistic regression, random forest, gradient boosting, SVM) for comparison. The best model is saved. Then the cycle repeats with the updated model and configuration.
+5. **Train** — A training pipeline builds labeled data from crawl logs, trains four model types (logistic regression, random forest, gradient boosting, SVM), and saves the best one.
 
 ## How the Crawler Works
 
@@ -38,11 +38,11 @@ The project is built around a feedback cycle. Each component exists to close thi
 
 - **Recipe extraction** — Parses JSON-LD and microdata Recipe schemas to extract structured data (ex. title, ingredients, instructions).
 
-- **Dynamic domain cap** — High yield domains get more queue slots while low yield domains get fewer. This balances exploitation of "good" sources with the exploration of new ones.
+- **Dynamic domain cap** — High yield domains get more queue slots, low yield domains get fewer.
 
 ## Results
 
-95.5% mean harvest efficiency across 5 runs of 1,000 pages each, crawling 51 seed sites. 95 out of every 100 pages the crawler chooses to fetch contain a valid recipe.
+96.5% mean harvest efficiency across 5 runs of 1,000 pages each, crawling 51 seed sites.
 
 ## Setup
 
@@ -57,7 +57,7 @@ pip install -e ".[dev]"
 ### Crawl
 
 ```bash
-python -m cookie_monster_crawl.crawler --max-pages 1000 --model models/model_v29.pkl --seeds data/static-target.json
+python -m cookie_monster_crawl.crawler --max-pages 1000 --model models/model_v34.pkl --seeds data/static-target.json
 ```
 
 Options:
@@ -77,7 +77,7 @@ Output:
 
 ```bash
 python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl
-python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl --model models/model_v29.pkl --show-misses
+python -m cookie_monster_crawl.replay crawl_logs/crawl_*.jsonl --model models/model_v34.pkl --show-misses
 ```
 
 ### Train a Model
@@ -89,13 +89,13 @@ python -m cookie_monster_crawl.train crawl_logs/crawl_*.jsonl --model logistic_r
 ### Strategy Generation
 
 ```bash
-python -m cookie_monster_crawl.strategy replay_output.json --model models/model_v29.pkl
+python -m cookie_monster_crawl.strategy replay_output.json --model models/model_v34.pkl
 ```
 
 ### Full Pipeline
 
 ```bash
-python -m cookie_monster_crawl.pipeline --model models/model_v29.pkl --seeds data/static-target.json
+python -m cookie_monster_crawl.pipeline --model models/model_v34.pkl --seeds data/static-target.json
 ```
 
 Chains crawl, replay, strategy, apply, and train into a single run.

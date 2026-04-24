@@ -12,7 +12,7 @@ from cookie_monster_crawl.parser import get_base_domain
 from collections import defaultdict
 from pathlib import Path
 
-FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.pdf', '.zip')
+FILE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.pdf', '.mp4', '.mp3', '.zip', '.ico')
 
 logger = logging.getLogger(__name__)
 

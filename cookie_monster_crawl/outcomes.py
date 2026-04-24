@@ -26,12 +26,14 @@ def record_outcome(
 
     feature_names = [f.get("name", "?") for f in strategy.get("feature_proposals", [])]
     policy_summaries = [p[:80] for p in strategy.get("policy_proposals", [])]
+    config_summaries = [f"{c.get('parameter', '?')}: {c.get('current_value', '?')} → {c.get('proposed_value', '?')}" for c in strategy.get("config_proposals", [])]
 
     record = {
         "timestamp": datetime.now().isoformat(),
         "strategy_file": strategy_file,
         "feature_proposals": feature_names,
         "policy_proposals": policy_summaries,
+        "config_proposals": config_summaries,
         "harvest_before": harvest_before,
         "harvest_after": harvest_after,
         "delta": {
@@ -78,6 +80,7 @@ def format_outcomes_for_prompt(outcomes: list[dict], max_entries: int = 5) -> st
         lines.append(f"### Run {i}: {direction} ({delta_pct:+.1f}%)")
         lines.append(f"Harvest: {before.get('harvest_pct', '?')}% → {after.get('harvest_pct', '?')}%")
         lines.append(f"Features proposed: {', '.join(o.get('feature_proposals', [])) or '(none)'}")
+        lines.append(f"Config proposed: {', '.join(o.get('config_proposals', [])) or '(none)'}")
         lines.append(f"Policies proposed: {', '.join(o.get('policy_proposals', [])) or '(none)'}")
         lines.append("")
 

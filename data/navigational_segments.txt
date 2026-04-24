@@ -52,3 +52,9 @@ cuisine-type
 ingredients-a-z
 meal-type
 recipes-a-z
+entertainment
+fashion-style
+home-lifestyle
+just-for-fun
+lifestyle
+news-entertainment

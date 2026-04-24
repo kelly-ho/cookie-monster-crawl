@@ -19,6 +19,7 @@ from pathlib import Path
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 SEEDS_FILE = DATA_DIR / "static-target.json"
+CONFIG_FILE = DATA_DIR / "crawl_config.json"
 SEGMENT_FILES = {
     "infrastructure": DATA_DIR / "infrastructure_segments.txt",
     "navigational": DATA_DIR / "navigational_segments.txt",
@@ -114,6 +115,15 @@ def print_diff(strategy: dict, seed_diff: dict, segment_diffs: dict[str, dict]):
             print(f"    {feat.get('description', '')}")
             print(f"    Computation: {feat.get('computation', '')}")
 
+    configs = strategy.get("config_proposals", [])
+    if configs:
+        print(f"\n{'─'*60}")
+        print(f"CONFIG PROPOSALS  ({CONFIG_FILE})")
+        print(f"{'─'*60}")
+        for c in configs:
+            print(f"  {c.get('parameter', '?')}: {c.get('current_value', '?')} → {c.get('proposed_value', '?')}")
+            print(f"    {c.get('rationale', '')}")
+
     policies = strategy.get("policy_proposals", [])
     if policies:
         print(f"\n{'─'*60}")
@@ -174,6 +184,36 @@ def write_segments(segment_diffs: dict[str, dict]):
                     f.write(entry + "\n")
 
 
+def write_config(config_proposals: list[dict], filepath: Path):
+    """Apply config proposals to crawl_config.json."""
+    with open(filepath, encoding="utf-8") as f:
+        config = json.load(f)
+
+    scoring = config.get("scoring", {})
+    for proposal in config_proposals:
+        param = proposal["parameter"]
+        value = proposal["proposed_value"]
+        # Convert string values to appropriate types
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Check top-level scoring keys first, then nested
+        if param in scoring:
+            scoring[param] = value
+        else:
+            # Check nested dicts (components, anchor, leaf, mid)
+            for section in ("components", "anchor", "leaf", "mid"):
+                if section in scoring and param in scoring[section]:
+                    scoring[section][param] = value
+                    break
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+
+
 def confirm() -> bool:
     try:
         answer = input("Apply these changes? [y/N] ").strip().lower()
@@ -201,10 +241,13 @@ def main():
 
     print_diff(strategy, seed_diff, segment_diffs)
 
+    config_proposals = strategy.get("config_proposals", [])
+
     has_changes = (
         seed_diff["added"]
         or seed_diff["removed"]
         or any(d["new_entries"] for d in segment_diffs.values())
+        or config_proposals
     )
 
     if not has_changes:
@@ -221,6 +264,8 @@ def main():
 
     write_seeds(seed_diff["new"], SEEDS_FILE)
     write_segments(segment_diffs)
+    if config_proposals:
+        write_config(config_proposals, CONFIG_FILE)
     print("Applied.")
 
 
